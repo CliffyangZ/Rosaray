@@ -1,5 +1,9 @@
 # ToothAI_Project
 
+## 研究演算法專案
+
+各研究演算法以 Git submodule 管理於 [`research/`](research/README.md)。新增、初始化與更新流程請參閱該目錄的說明。
+
 ## 專案背景與動機
 本專案志在開發針對學齡孩童的口腔保健及量化追蹤AI應用，透過醫學影像分析技術從口內相片量化資訊，提供雲端口牙檢查，紀錄追蹤功能，萃取出的資訊 (或許可以研究時序關係, 但基本上會遇到資料瓶頸的問題。ps. 創業比賽可以畫大餅) 可以透過 LLM 分析報告書提供醫師或家長初步報告以追蹤觀察幼齡孩童口牙保健。
     
@@ -7,6 +11,8 @@
 
 ## 系統架構規劃
 > 初期雛形想法
+
+- Draw.io 共編: https://drive.google.com/file/d/1ZzgefNaNET78VfW_kjYneavOK3QMAHSM/view?usp=sharing
 
 <img src="assets/backend_archi.drawio.png" width="85%" lenth="35%">
 
