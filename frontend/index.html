@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>ToothAI Workstation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+</head>
+<body>
+<div id="app">
+  <div id="menubar" role="menubar"></div>
+
+  <div id="work">
+    <nav id="activity" aria-label="Activity"></nav>
+
+    <aside id="left" class="side" aria-label="Project side bar"></aside>
+    <div class="rz" data-target="left"></div>
+
+    <main id="center">
+      <div id="tabs"></div>
+      <div id="tools">
+        <div class="seg" id="modes">
+          <button data-m="input" class="on">Input</button><button data-m="output">Output</button><button data-m="overlay">Overlay</button>
+        </div>
+        <button class="tb" id="zin" title="Zoom in">＋</button>
+        <button class="tb" id="zout" title="Zoom out">－</button>
+        <button class="tb" id="zfit" title="Fit to window">Fit</button>
+        <button class="tb" id="z1" title="Actual pixels">1:1</button>
+        <span class="sp"></span>
+        <button class="btn" id="runbtn" title="Ctrl/⌘ + Enter">▶ Run pipeline</button>
+      </div>
+      <div id="stagewrap">
+        <div id="stage"><canvas id="cv"></canvas></div>
+        <div id="hud"></div>
+        <div id="legend"></div>
+        <div id="scalebar"></div>
+      </div>
+      <div class="rzy" data-target="bottom"></div>
+      <section id="bottom">
+        <div class="btabs" id="btabs">
+          <button data-b="metrics" class="on">Metrics</button>
+          <button data-b="runs">Run history</button>
+          <button data-b="warn">Validation</button>
+          <span class="sp"></span>
+          <button id="bclose" title="Hide panel">✕</button>
+        </div>
+        <div class="scroll" id="bbody"></div>
+      </section>
+    </main>
+
+    <div class="rz" data-target="right"></div>
+    <aside id="right" class="side" aria-label="Pipeline side bar">
+      <div class="sh"><span>Pipeline</span><span class="mono" id="gstat">6 nodes</span></div>
+      <details class="sec" open style="border-top:0">
+        <summary>Algorithms <span class="count">drag to canvas</span></summary>
+        <div id="palette"></div>
+      </details>
+      <div id="graph"><div id="gin"><svg id="edges"></svg></div></div>
+      <div id="inspector">
+        <div class="sh"><span id="ititle">Inspector</span><span class="mono" id="isub"></span></div>
+        <div class="scroll" id="ibody"></div>
+      </div>
+    </aside>
+  </div>
+
+  <div id="status">
+    <span>● Local-first · 127.0.0.1:4310</span>
+    <span class="mono" id="px">—</span>
+    <span class="sp"></span>
+    <span>Research use only — not for diagnosis</span>
+  </div>
+  <div id="toast" hidden></div>
+</div>
+<input type="file" id="file" accept="image/png,image/jpeg" hidden>
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>
