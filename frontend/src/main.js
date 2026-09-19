@@ -1,4 +1,5 @@
 import './styles.css';
+import rosarayIcon from './clarosa-ai-icon.png';
 import {$,$$,ic,toast,hash} from './util.js';
 import {dice} from './algo.js';
 import {DEFS,dflt,exec} from './registry.js';
@@ -26,11 +27,11 @@ const MENUS={
   Edit:[['Delete Selected Node','⌫',()=>delSel()],['Clear Pipeline','',()=>{nodes=[];edges=[];selId=null;renderGraph();toast('Pipeline cleared')}],['Reset Pipeline','',()=>{resetGraph();renderGraph();toast('Pipeline reset to default')}]],
   View:[['Toggle Side Bar','⌘B',()=>toggle('left')],['Toggle Pipeline Panel','⌥⌘B',()=>toggle('right')],['Toggle Bottom Panel','⌘J',()=>toggleBottom()],'-',['Fit Image to Window','',()=>fit()],['Actual Pixels (1:1)','',()=>zoomTo(1)],'-',['Theme: Light','',()=>setTheme('light')],['Theme: Dark','',()=>setTheme('dark')]],
   Pipeline:[['Run Pipeline','⌘↵',()=>run()],['Validate Pipeline','',()=>{const e=validateGraph();toast(e||'Pipeline is valid: types match, no cycles',!!e)}]],
-  Help:[['About ToothAI Workstation','',()=>toast('ToothAI Workstation — research prototype, not for diagnosis. Sample images are synthetic.')]]
+  Help:[['About Rosaray','',()=>toast('Rosaray — research prototype, not for diagnosis. Sample images are synthetic.')]]
 };
 function buildMenus(){
   const mb=$('#menubar');
-  mb.innerHTML='<div class="brand"><i></i>ToothAI</div>'+Object.keys(MENUS).map(k=>`<button class="mb" data-k="${k}">${k}</button>`).join('')+'<span class="spacer"></span><span class="proj">Intraoral photo analysis · sample project</span>';
+  mb.innerHTML='<div class="brand"><img src="'+rosarayIcon+'" alt="" aria-hidden="true">Rosaray</div>'+Object.keys(MENUS).map(k=>`<button class="mb" data-k="${k}">${k}</button>`).join('')+'<span class="spacer"></span><span class="proj">Intraoral photo analysis · sample project</span>';
   let cur=null;
   const close=()=>{$$('.dd').forEach(e=>e.remove());$$('.mb.open').forEach(b=>b.classList.remove('open'));cur=null};
   const open=b=>{close();cur=b.dataset.k;b.classList.add('open');const dd=document.createElement('div');dd.className='dd';dd.style.left=b.offsetLeft+'px';
