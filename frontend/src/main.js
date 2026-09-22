@@ -4,11 +4,17 @@ import {$,$$,ic,toast,hash} from './util.js';
 import {dice} from './algo.js';
 import {DEFS,dflt,exec} from './registry.js';
 import {samples,getImg} from './samples.js';
+import * as svc from './service_client.js';
 
 // ---- state ----
 let nodes=[],edges=[],selId=null,pending=null,uid=1;
-let openTabs=['s1'],activeId='s1',mode='input',results=null,lastRun=null;
+let openTabs=[],activeId=null,mode='input',results=null,lastRun=null;
 const runs=[];
+// ---- local service (Rosaray Service) explorer state ----
+let svcDatasets=[],svcDatasetId=null,svcVersions=[],svcVersionId=null,svcImages=[],svcThumbObserver=null;
+let svcOpenReqId=0; // bumped per svcOpenImage() call so a slower, superseded request can never overwrite a newer selection (FR-039)
+const svcThumbRequests=new Map(); // image_id -> in-flight request_id, for scroll-away cancellation
+const svcThumbCache=new Map(); // image_id -> data URL, so re-rendering the list doesn't re-fetch
 function resetGraph(){
   nodes=[];edges=[];uid=1;
   const seq=[['source',12,10],['normalize',176,84],['gaussian',12,158],['threshold',176,232],['morphology',12,306],['area',176,380]];
@@ -20,6 +26,132 @@ function addNode(type,x,y,quiet){const n={id:'n'+uid++,type,x:Math.max(4,x),y:Ma
 const nodeById=id=>nodes.find(n=>n.id===id);
 const activeSample=()=>samples.find(s=>s.id===activeId);
 
+// ---- local service (Rosaray Service) integration (User Story 2) ----
+// Boot with ?rosarayPort=<port>&rosaraySession=<token> from the service's
+// stdout line to connect; without it the workspace starts empty.
+function decodeBlobToLuma(blob){
+  return new Promise((resolve,reject)=>{
+    const img=new Image();
+    img.onload=()=>{const w=img.width,h=img.height,c=document.createElement('canvas');c.width=w;c.height=h;
+      const x=c.getContext('2d');x.drawImage(img,0,0);const px=x.getImageData(0,0,w,h).data,d=new Float32Array(w*h);
+      for(let i=0;i<w*h;i++)d[i]=.299*px[i*4]+.587*px[i*4+1]+.114*px[i*4+2];
+      URL.revokeObjectURL(img.src);resolve({w,h,d})};
+    img.onerror=reject;img.src=URL.createObjectURL(blob)});
+}
+function decodeBlobToBinaryMask(blob,w,h){
+  return new Promise((resolve,reject)=>{
+    const img=new Image();
+    img.onload=()=>{const c=document.createElement('canvas');c.width=w;c.height=h;
+      const x=c.getContext('2d');x.drawImage(img,0,0,w,h);const px=x.getImageData(0,0,w,h).data,gt=new Uint8Array(w*h);
+      for(let i=0;i<w*h;i++)gt[i]=px[i*4]>127?1:0;
+      URL.revokeObjectURL(img.src);resolve(gt)};
+    img.onerror=reject;img.src=URL.createObjectURL(blob)});
+}
+
+async function svcListDatasets(){
+  try{
+    const r=await svc.request('GET','/datasets');svcDatasets=r.datasets;
+    if(!svcDatasetId&&svcDatasets.length)svcDatasetId=svcDatasets[0].id;
+    if(svcDatasetId)await svcListVersions();
+  }catch(e){toast('Could not load datasets: '+e.message,true)}
+  renderLeft();
+}
+async function svcSelectDataset(id){svcDatasetId=id;svcVersionId=null;svcImages=[];await svcListVersions()}
+async function svcListVersions(){
+  if(!svcDatasetId)return;
+  try{const r=await svc.request('GET',`/datasets/${svcDatasetId}/versions`);svcVersions=r.versions;
+    if(!svcVersionId&&svcVersions.length)svcVersionId=svcVersions[svcVersions.length-1].id;
+    await svcListImages();}
+  catch(e){toast('Could not load dataset versions: '+e.message,true)}
+  renderLeft();
+}
+async function svcListImages(){
+  if(!svcVersionId)return;
+  try{const r=await svc.request('GET',`/dataset-versions/${svcVersionId}/images`);svcImages=r.images}
+  catch(e){toast('Could not load images: '+e.message,true);svcImages=[]}
+}
+async function svcSelectVersion(id){svcVersionId=id;await svcListImages();renderLeft()}
+
+async function svcScanFolder(path){
+  try{
+    const r=await svc.request('POST','/import-batches',{source_selection:'folder_scan',paths:[path],metadata_manifest:null,dataset_display_name:'Rosaray Dataset'});
+    const importable=r.candidates.filter(c=>c.classification==='importable').map(c=>c.source_ref);
+    if(!importable.length){toast('No importable images found in that folder',true);return}
+    const c=await svc.request('POST',`/import-batches/${r.batch_id}/confirm`,{confirmed_source_refs:importable});
+    svcDatasetId=c.dataset_id;svcVersionId=c.dataset_version_id;
+    toast(`Imported ${importable.length} image(s) into a new Dataset Version`);
+    await svcListVersions();
+  }catch(e){toast('Import failed: '+e.message,true)}
+}
+
+async function svcOpenImage(imageId){
+  const reqId=++svcOpenReqId; // any earlier in-flight svcOpenImage() call is now stale
+  try{
+    const desc=await svc.request('GET',`/image-assets/${imageId}/display`);
+    if(reqId!==svcOpenReqId)return; // a newer selection superseded this one — never overwrite it (FR-039)
+    const imgBlob=await svc.request('GET',`/artifacts/${desc.image_artifact_ref.id}/content`);
+    if(reqId!==svcOpenReqId)return;
+    const{w,h,d}=await decodeBlobToLuma(imgBlob);
+    if(reqId!==svcOpenReqId)return;
+    let gt=null;
+    if(desc.reference_mask_ref){
+      const maskBlob=await svc.request('GET',`/artifacts/${desc.reference_mask_ref.id}/content`);
+      if(reqId!==svcOpenReqId)return;
+      gt=await decodeBlobToBinaryMask(maskBlob,w,h);
+      if(reqId!==svcOpenReqId)return;
+    }
+    const sid='svc-'+imageId;
+    const existing=samples.findIndex(s=>s.id===sid);
+    const s={id:sid,name:`image-${imageId.slice(0,8)}.png`,patient:desc.display_metadata.patient_id||'—',
+      split:desc.display_metadata.split||'train',spacing:.05,serviceImageId:imageId,
+      overlayDisabledReason:desc.reference_mask_unavailable_reason||null,data:{w,h,d,gt}};
+    if(existing>=0)samples[existing]=s;else samples.push(s);
+    openSample(sid);
+  }catch(e){if(reqId===svcOpenReqId)toast('Could not open image: '+e.message,true)}
+}
+
+function svcObserveThumbnails(container){
+  if(svcThumbObserver)svcThumbObserver.disconnect();
+  svcThumbObserver=new IntersectionObserver(entries=>{
+    entries.forEach(en=>{
+      const id=en.target.dataset.thumbFor;
+      if(en.isIntersecting)svcLoadThumbnail(id,en.target);
+      else svcCancelThumbnail(id);
+    });
+  },{root:container,rootMargin:'80px'});
+  $$('[data-thumb-for]',container).forEach(el=>svcThumbObserver.observe(el));
+}
+async function svcLoadThumbnail(imageId,el){
+  if(svcThumbCache.has(imageId)){el.style.backgroundImage=svcThumbCache.get(imageId);el.style.backgroundSize='cover';return}
+  if(svcThumbRequests.has(imageId))return; // already in flight
+  try{
+    const r=await svc.request('GET',`/image-assets/${imageId}/thumbnail`);
+    if(r.state==='ready'){const url=`url(data:image/png;base64,${r.data_base64})`;svcThumbCache.set(imageId,url);el.style.backgroundImage=url;el.style.backgroundSize='cover';return}
+    if(r.state==='generating'&&r.request_id&&r.request_id!=='00000000-0000-0000-0000-000000000000'){
+      svcThumbRequests.set(imageId,r.request_id);
+      setTimeout(()=>{svcThumbRequests.delete(imageId);svcLoadThumbnail(imageId,el)},400);
+    }
+  }catch{/* thumbnail is best-effort; a failure just leaves the placeholder */}
+}
+function svcCancelThumbnail(imageId){
+  const reqId=svcThumbRequests.get(imageId);
+  if(reqId){svc.request('DELETE',`/requests/${reqId}`).catch(()=>{});svcThumbRequests.delete(imageId)}
+}
+
+let lastSvcState=null;
+svc.subscribeEvents(
+  ev=>{if(ev.type==='thumbnail_ready'){const el=$(`[data-thumb-for="${ev.payload.image_asset_id}"]`);if(el)svcLoadThumbnail(ev.payload.image_asset_id,el)}},
+  state=>{const wasDown=lastSvcState&&lastSvcState!=='ready';lastSvcState=state;
+    if(leftView==='data')renderLeft();
+    paint(); // refresh the stale-content banner if the open image came from the service
+    if(state==='ready'){
+      // Reconnection procedure (event-bus.md): never trust stale data — re-fetch on the transition back to ready.
+      if(!svcDatasetId)svcListDatasets();
+      else if(wasDown)svcListVersions();
+    }
+  }
+);
+
 
 // ---- menu bar ----
 const MENUS={
@@ -27,11 +159,11 @@ const MENUS={
   Edit:[['Delete Selected Node','⌫',()=>delSel()],['Clear Pipeline','',()=>{nodes=[];edges=[];selId=null;renderGraph();toast('Pipeline cleared')}],['Reset Pipeline','',()=>{resetGraph();renderGraph();toast('Pipeline reset to default')}]],
   View:[['Toggle Side Bar','⌘B',()=>toggle('left')],['Toggle Pipeline Panel','⌥⌘B',()=>toggle('right')],['Toggle Bottom Panel','⌘J',()=>toggleBottom()],'-',['Fit Image to Window','',()=>fit()],['Actual Pixels (1:1)','',()=>zoomTo(1)],'-',['Theme: Light','',()=>setTheme('light')],['Theme: Dark','',()=>setTheme('dark')]],
   Pipeline:[['Run Pipeline','⌘↵',()=>run()],['Validate Pipeline','',()=>{const e=validateGraph();toast(e||'Pipeline is valid: types match, no cycles',!!e)}]],
-  Help:[['About Rosaray','',()=>toast('Rosaray — research prototype, not for diagnosis. Sample images are synthetic.')]]
+  Help:[['About Rosaray','',()=>toast('Rosaray — research prototype, not for diagnosis.')]]
 };
 function buildMenus(){
   const mb=$('#menubar');
-  mb.innerHTML='<div class="brand"><img src="'+rosarayIcon+'" alt="" aria-hidden="true">Rosaray</div>'+Object.keys(MENUS).map(k=>`<button class="mb" data-k="${k}">${k}</button>`).join('')+'<span class="spacer"></span><span class="proj">Intraoral photo analysis · sample project</span>';
+  mb.innerHTML='<div class="brand"><img src="'+rosarayIcon+'" alt="" aria-hidden="true">Rosaray</div>'+Object.keys(MENUS).map(k=>`<button class="mb" data-k="${k}">${k}</button>`).join('')+'<span class="spacer"></span><span class="proj">Intraoral photo analysis · local project</span>';
   let cur=null;
   const close=()=>{$$('.dd').forEach(e=>e.remove());$$('.mb.open').forEach(b=>b.classList.remove('open'));cur=null};
   const open=b=>{close();cur=b.dataset.k;b.classList.add('open');const dd=document.createElement('div');dd.className='dd';dd.style.left=b.offsetLeft+'px';
@@ -65,11 +197,11 @@ function renderLeft(){
     L.innerHTML=`<div class="sh"><span>Explorer</span><button class="tb" title="Import image" id="imp">＋</button></div>
     <div class="scroll">
     <details class="sec" open><summary>Images <span class="count">${samples.length}</span></summary>
-      ${samples.map(s=>`<div class="row ${s.id===activeId?'on':''}" data-s="${s.id}"><span class="thumb" data-t="${s.id}"></span><span class="nm">${s.name}</span><span class="pill ${s.split}">${s.split.slice(0,5)}</span></div>`).join('')}
+      ${samples.length?samples.map(s=>`<div class="row ${s.id===activeId?'on':''}" data-s="${s.id}"><span class="thumb" data-t="${s.id}"></span><span class="nm">${s.name}</span><span class="pill ${s.split}">${s.split.slice(0,5)}</span></div>`).join(''):'<div class="empty">No image open. Import an image or select one from Dataset.</div>'}
     </details>
-    <details class="sec" open><summary>Masks <span class="count">${samples.filter(s=>getImg(s).gt).length}</span></summary>
+    ${samples.some(s=>getImg(s).gt)?`<details class="sec" open><summary>Masks <span class="count">${samples.filter(s=>getImg(s).gt).length}</span></summary>
       ${samples.filter(s=>getImg(s).gt).map(s=>`<div class="row" data-s="${s.id}"><span class="thumb" style="background:var(--mask);opacity:.7"></span><span class="nm">${s.name.replace('.png','_ref.png')}</span><span class="pill">paired</span></div>`).join('')}
-    </details>
+    </details>`:''}
     <details class="sec" open><summary>Models <span class="count">0</span></summary><div class="empty">No ONNX models yet.<br>File → Import Model…</div></details>
     <details class="sec"><summary>Runs <span class="count">${runs.length}</span></summary>${runs.length?runs.slice().reverse().map(r=>`<div class="row"><span class="nm mono">${r.id}</span><span class="pill">${r.dice==null?'—':'Dice '+r.dice.toFixed(2)}</span></div>`).join(''):'<div class="empty">Run the pipeline to create an immutable run.</div>'}</details>
     </div>`;
@@ -77,15 +209,58 @@ function renderLeft(){
     $$('[data-t]',L).forEach(t=>{const s=samples.find(x=>x.id===t.dataset.t),im=getImg(s),c=document.createElement('canvas');c.width=c.height=16;const x=c.getContext('2d'),tmp=toCanvas(im.w,im.h,im.d);x.drawImage(tmp,0,0,16,16);t.style.background=`url(${c.toDataURL()})`;t.style.backgroundSize='cover'});
     $('#imp').onclick=()=>$('#file').click();
   }else if(leftView==='data'){
-    L.innerHTML=`<div class="sh"><span>Dataset</span></div><div class="scroll">
-      <table class="tbl"><tr><th>Patient</th><th>Split</th><th>Mask</th></tr>${samples.map(s=>`<tr><td>${s.patient}</td><td><span class="pill ${s.split}">${s.split}</span></td><td>${getImg(s).gt?'paired':'—'}</td></tr>`).join('')}</table>
-      <div class="note">Fingerprint <span class="mono">${fingerprint()}</span><br>Includes file hash, patient ID, split and mask pairing — re-assigning a split changes it.</div></div>`;
+    renderDatasetExplorer(L);
   }else{
     L.innerHTML=`<div class="sh"><span>Evidence</span></div><input class="search" id="q" placeholder="Search PubMed / Hugging Face…" aria-label="Search evidence">
       <div class="note">Evidence attaches to a pipeline node, not to the project. Select a node, search, then attach a result.<br><br>Search runs through the local API (<span class="mono">/api/search/pubmed</span>); only the query text leaves this machine. Not connected in this prototype.</div>`;
   }
 }
 const fingerprint=()=>hash(samples.map(s=>[s.id,s.patient,s.split,s.seed].join(':')).sort().join('|'));
+
+const SVC_STATE_LABEL={connecting:'Connecting…',ready:'Connected',unavailable:'Service unavailable',access_denied:'Access denied'};
+function renderDatasetExplorer(L){
+  if(!svc.isConnected()){
+    L.innerHTML=`<div class="sh"><span>Dataset</span></div><div class="scroll">
+      <div class="note">Not connected to the Local Rosaray Service. Start Rosaray with <span class="mono">./scripts/launch.sh</span> to browse encrypted, versioned datasets here.</div></div>`;
+    return;
+  }
+  const st=svc.currentSessionState();
+  if(st!=='ready'){
+    // Never keep showing a prior Dataset/image list as current once the
+    // connection drops — that would look live when it is stale (FR-039).
+    L.innerHTML=`<div class="sh"><span>Dataset</span><span class="pill ${st==='connecting'?'warnc':'errc'}">${SVC_STATE_LABEL[st]||st}</span></div>
+      <div class="scroll"><div class="note">${st==='connecting'?'Reconnecting to the Local Rosaray Service…':'Lost connection to the Local Rosaray Service. The Dataset and image lists are hidden until reconnected, so nothing stale is shown as current.'}</div>
+      ${st==='unavailable'?'<button class="btn" id="retrybtn">Retry connection</button>':''}
+      </div>`;
+    $('#retrybtn',L)&&($('#retrybtn').onclick=()=>{if(!svc.retryConnect())toast('Not connected to the local service',true)});
+    return;
+  }
+  L.innerHTML=`<div class="sh"><span>Dataset</span><span class="pill ok">${SVC_STATE_LABEL[st]||st}</span></div>
+    <div class="scroll">
+    <div class="fld"><label for="scanpath">Folder to import (absolute path)</label><input id="scanpath" type="text" placeholder="/path/to/images"></div>
+    <button class="btn" id="scanbtn">Scan &amp; import folder</button>
+    ${svcDatasets.length>1?`<div class="fld"><label for="dspick">Dataset</label><select id="dspick">${svcDatasets.map(d=>`<option value="${d.id}" ${d.id===svcDatasetId?'selected':''}>${d.display_name}</option>`).join('')}</select></div>`:''}
+    ${svcVersions.length?`<div class="fld"><label for="verpick">Dataset Version</label><select id="verpick">${svcVersions.slice().reverse().map(v=>`<option value="${v.id}" ${v.id===svcVersionId?'selected':''}>${v.created_at} · ${v.image_count} image(s) · ${v.validation_summary.status}</option>`).join('')}</select></div>`:''}
+    ${svcVersionId?renderSvcImageList():'<div class="empty">No Dataset Version yet — scan a folder above.</div>'}
+    </div>`;
+  $('#scanbtn',L).onclick=()=>{const p=$('#scanpath',L).value.trim();if(p)svcScanFolder(p)};
+  $('#dspick',L)&&($('#dspick').onchange=e=>svcSelectDataset(e.target.value));
+  $('#verpick',L)&&($('#verpick').onchange=e=>svcSelectVersion(e.target.value));
+  $$('.row[data-svc-img]',L).forEach(r=>r.onclick=()=>svcOpenImage(r.dataset.svcImg));
+  if(svcVersionId)svcObserveThumbnails($('.scroll',L));
+}
+function renderSvcImageList(){
+  const v=svcVersions.find(x=>x.id===svcVersionId);
+  const findingBadge=v&&v.validation_summary.status!=='ok'?`<span class="pill ${v.validation_summary.status==='blocked'?'errc':'warnc'}">${v.validation_summary.status} · ${v.validation_summary.finding_ids.length} finding(s)</span>`:'';
+  return `<details class="sec" open><summary>Images <span class="count">${svcImages.length}</span> ${findingBadge}</summary>
+    ${svcImages.map(im=>`<div class="row" data-svc-img="${im.id}">
+      <span class="thumb" data-thumb-for="${im.id}"></span>
+      <span class="nm">${im.display_name}${im.source_status!=='available'?' <em>('+im.source_status+')</em>':''}</span>
+      <span class="pill ${im.split||''}">${im.split||'—'}</span>
+      <span class="pill ${im.reference_mask_status==='valid'?'':im.reference_mask_status==='invalid'?'warnc':''}">${im.reference_mask_status}</span>
+    </div>`).join('')}
+    </details>`;
+}
 
 
 // ---- viewer ----
@@ -94,21 +269,45 @@ let view={s:1,x:0,y:0};
 function toCanvas(w,h,d,maskAlpha){const c=document.createElement('canvas');c.width=w;c.height=h;const x=c.getContext('2d'),id=x.createImageData(w,h);
   for(let i=0;i<w*h;i++){const v=d[i];id.data[i*4]=id.data[i*4+1]=id.data[i*4+2]=v;id.data[i*4+3]=255}x.putImageData(id,0,0);return c}
 function paint(){
-  const s=activeSample();if(!s)return;const im=getImg(s);cv.width=im.w;cv.height=im.h;const x=cv.getContext('2d');
+  updateModeButtons();
+  const s=activeSample();
+  if(!s){
+    cv.width=1;cv.height=1;
+    $('#hud').innerHTML='<b>No image open</b><br>Import an image, or select one from Dataset.';
+    $('#legend').innerHTML='';$('#scalebar').innerHTML='';
+    return;
+  }
+  const im=getImg(s);cv.width=im.w;cv.height=im.h;const x=cv.getContext('2d');
   const vis=results&&results.sampleId===activeId?results:null;
-  let asMask=false;
   if(mode==='output'&&vis&&vis.visual){const v=vis.visual;
     x.drawImage(toCanvas(v.w,v.h,v.kind==='mask'?v.d.map(m=>m*255):v.d),0,0)}
   else x.drawImage(toCanvas(im.w,im.h,im.d),0,0);
-  if(mode==='overlay'&&vis&&vis.mask){const id=x.getImageData(0,0,im.w,im.h),c=getComputedStyle(document.documentElement).getPropertyValue('--mask').trim(),
+  // Overlay mode shows the reference (ground-truth) mask, per US2 acceptance
+  // scenario 3 — not the pipeline's predicted output mask.
+  if(mode==='overlay'&&im.gt){const id=x.getImageData(0,0,im.w,im.h),c=getComputedStyle(document.documentElement).getPropertyValue('--mask').trim(),
     rgb=parseInt(c.slice(1),16),R=rgb>>16,G=(rgb>>8)&255,B=rgb&255;
-    for(let i=0;i<vis.mask.d.length;i++)if(vis.mask.d[i]){id.data[i*4]=id.data[i*4]*.45+R*.55;id.data[i*4+1]=id.data[i*4+1]*.45+G*.55;id.data[i*4+2]=id.data[i*4+2]*.45+B*.55}x.putImageData(id,0,0)}
-  const noRes=(mode!=='input')&&!vis;
-  $('#hud').innerHTML=`<b>${s.name}</b><br>${im.w} × ${im.h} px · ${s.patient} · ${s.split}<br>${noRes?'<span style="color:var(--mask)">No result yet — press Run pipeline</span>':'mode: '+mode}`;
-  $('#legend').innerHTML=mode==='overlay'&&vis&&vis.mask?'<span><i></i>predicted mask</span>':'';
+    for(let i=0;i<im.gt.length;i++)if(im.gt[i]){id.data[i*4]=id.data[i*4]*.45+R*.55;id.data[i*4+1]=id.data[i*4+1]*.45+G*.55;id.data[i*4+2]=id.data[i*4+2]*.45+B*.55}x.putImageData(id,0,0)}
+  const noRes=mode==='output'&&!vis;
+  const svcStale=s.serviceImageId&&svc.isConnected()&&svc.currentSessionState()!=='ready';
+  $('#hud').innerHTML=`${svcStale?'<div class="errc">⚠ Service disconnected — this content may be stale</div>':''}<b>${s.name}</b><br>${im.w} × ${im.h} px · ${s.patient} · ${s.split}${s.serviceImageId?' · reference mask '+(im.gt?'available':'unavailable'):''}<br>${noRes?'<span style="color:var(--mask)">No result yet — press Run pipeline</span>':'mode: '+mode}`;
+  $('#legend').innerHTML=mode==='overlay'&&im.gt?'<span><i></i>reference mask</span>':'';
   const mm=Math.round(100/s.spacing/view.s/10)*10||10;
   $('#scalebar').innerHTML=`<div style="width:${(10/s.spacing)*view.s}px"></div>10 mm`;
   applyView();
+}
+function updateModeButtons(){
+  const s=activeSample();
+  if(!s){
+    mode='input';
+    $$('#modes button').forEach(b=>b.classList.toggle('on',b.dataset.m===mode));
+    $$('[data-m]').forEach(b=>{b.disabled=b.dataset.m!=='input';b.title=b.disabled?'Open an image first.':''});
+    return;
+  }
+  $$('[data-m]').forEach(b=>{b.disabled=false;b.title=''});
+  const reason=s.overlayDisabledReason||(getImg(s).gt?null:'No reference mask available for this image.');
+  const btn=$('[data-m="overlay"]',$('#modes'));
+  if(btn){btn.disabled=!!reason;btn.title=reason||''}
+  if(reason&&mode==='overlay'){mode='input';$$('#modes button').forEach(x=>x.classList.toggle('on',x.dataset.m===mode))}
 }
 function applyView(){stage.style.transform=`translate(${view.x}px,${view.y}px) scale(${view.s})`;cv.style.imageRendering=view.s>3?'pixelated':'auto';const s=activeSample();if(s)$('#scalebar').lastChild&&($('#scalebar').firstChild.style.width=(10/s.spacing)*view.s+'px')}
 function fit(){const s=activeSample();if(!s)return;const im=getImg(s),W=wrap.clientWidth,H=wrap.clientHeight;if(!W)return;
@@ -123,14 +322,22 @@ wrap.addEventListener('pointermove',e=>{
   $('#px').textContent=ix>=0&&iy>=0&&ix<im.w&&iy<im.h?`x ${ix}  y ${iy}  I ${im.d[iy*im.w+ix]|0}`:'—'});
 wrap.addEventListener('pointerup',()=>{pan=null;wrap.classList.remove('pan')});
 $('#zin').onclick=()=>zoomTo(view.s*1.25);$('#zout').onclick=()=>zoomTo(view.s/1.25);$('#zfit').onclick=fit;$('#z1').onclick=()=>zoomTo(1);
-$('#modes').onclick=e=>{const b=e.target.closest('button');if(!b)return;mode=b.dataset.m;$$('#modes button').forEach(x=>x.classList.toggle('on',x===b));paint()};
+$('#modes').onclick=e=>{const b=e.target.closest('button');if(!b||b.disabled)return;
+  mode=b.dataset.m;$$('#modes button').forEach(x=>x.classList.toggle('on',x===b));paint()};
 
 function renderTabs(){
-  $('#tabs').innerHTML=openTabs.map(id=>{const s=samples.find(x=>x.id===id);return`<div class="tab ${id===activeId?'on':''}" data-id="${id}"><span>${s.name}</span><b data-x="${id}" title="Close">✕</b></div>`}).join('');
+  $('#tabs').innerHTML=openTabs.map(id=>{const s=samples.find(x=>x.id===id);return s?`<div class="tab ${id===activeId?'on':''}" data-id="${id}"><span>${s.name}</span><b data-x="${id}" title="Close">✕</b></div>`:''}).join('');
   $$('.tab').forEach(t=>t.onclick=e=>{if(e.target.dataset.x){closeTab(e.target.dataset.x);return}openSample(t.dataset.id)});
 }
-function openSample(id){if(!openTabs.includes(id))openTabs.push(id);activeId=id;renderTabs();renderLeft();paint();fit();renderBottom()}
-function closeTab(id){if(openTabs.length===1)return;openTabs=openTabs.filter(x=>x!==id);if(activeId===id)activeId=openTabs[0];renderTabs();openSample(activeId)}
+function openSample(id){
+  if(!samples.some(s=>s.id===id))return;
+  if(!openTabs.includes(id))openTabs.push(id);activeId=id;renderTabs();renderLeft();paint();fit();renderBottom();
+}
+function closeTab(id){
+  openTabs=openTabs.filter(x=>x!==id);
+  if(activeId===id)activeId=openTabs[0]||null;
+  renderTabs();renderLeft();paint();if(activeId){fit()}renderBottom();
+}
 $('#file').onchange=e=>{const f=e.target.files[0];if(!f)return;const img=new Image();img.onload=()=>{
   const k=Math.min(1,1400/Math.max(img.width,img.height)),w=Math.round(img.width*k),h=Math.round(img.height*k),c=document.createElement('canvas');c.width=w;c.height=h;
   const x=c.getContext('2d');x.drawImage(img,0,0,w,h);const px=x.getImageData(0,0,w,h).data,d=new Float32Array(w*h);
@@ -201,6 +408,7 @@ function validateGraph(){
   return null;
 }
 function run(){
+  if(!activeSample()){toast('Open or import an image before running the pipeline.',true);return}
   const bad=validateGraph();if(bad){toast(bad,true);return}
   nodes.forEach(n=>{n.err=false;n.ms=null});
   const s=activeSample(),img=getImg(s),ctx={img,notes:[]},out={},steps=[],src=nodes.find(n=>n.type==='source');
@@ -231,6 +439,7 @@ $('#btabs').onclick=e=>{const b=e.target.closest('button');if(!b)return;if(b.id=
 function renderBottom(){
   const B=$('#bbody');
   if(btab==='metrics'){
+    if(!activeSample()){B.innerHTML='<div class="note">No image open. Import an image or select one from Dataset to begin.</div>';return}
     if(!results||results.sampleId!==activeId){B.innerHTML='<div class="note">No run for this image yet. Press <b>Run pipeline</b> (⌘↵) to compute mask, Dice and area.</div>';return}
     const t=results.table;
     B.innerHTML=`<div class="metrics">
@@ -239,7 +448,7 @@ function renderBottom(){
       <div class="metric"><small>Pixels</small><strong>${t?t.px:'—'}</strong></div>
       <div class="metric"><small>Components</small><strong>${t?t.cc:'—'}</strong></div></div>
       <table class="tbl"><tr><th>Step</th><th>Node</th><th>ms</th></tr>${results.steps.map((s,i)=>`<tr><td>${i+1}</td><td>${DEFS[s.n.type].label}</td><td>${s.ms.toFixed(1)}</td></tr>`).join('')}</table>
-      <div class="note">${results.notes.join(' · ')} · reference = synthetic tooth mask · preview resolution</div>`;
+      <div class="note">${results.notes.join(' · ')} · preview resolution</div>`;
   }else if(btab==='runs'){
     B.innerHTML=runs.length?`<table class="tbl"><tr><th>Run</th><th>Image</th><th>Dice</th><th>Area mm²</th><th>Dataset fp</th><th>Graph</th><th>Time</th></tr>${runs.slice().reverse().map(r=>`<tr><td>${r.id}</td><td>${r.img}</td><td>${r.dice==null?'—':r.dice.toFixed(3)}</td><td>${r.area==null?'—':r.area.toFixed(1)}</td><td>${r.fp}</td><td>${r.graph}</td><td>${r.t.toLocaleTimeString()}</td></tr>`).join('')}</table><div class="note">Runs are immutable snapshots: graph, parameters, dataset fingerprint and seed.</div>`:'<div class="note">No runs yet.</div>';
   }else{
@@ -276,5 +485,6 @@ addEventListener('resize',fit);
 
 buildMenus();buildActivity();renderPalette();resetGraph();renderGraph();renderTabs();
 if(innerWidth<760){$('#left').classList.add('hidden');$('#right').classList.add('hidden')}
+svc.autoConnect();
 renderLeft();paint();setB('metrics');
-requestAnimationFrame(()=>{fit();run();mode='overlay';$$('#modes button').forEach(b=>b.classList.toggle('on',b.dataset.m===mode));paint();$('#toast').hidden=true});
+requestAnimationFrame(()=>{$('#toast').hidden=true});

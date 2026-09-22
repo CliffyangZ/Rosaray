@@ -21,7 +21,7 @@ Rosaray 的目標是把口內影像分析所需的工作集中在同一個研究
 - 以 metrics、run history 與 validation 面板檢查結果及資料集狀態。
 - 保留資料集 fingerprint、pipeline graph、參數與執行時間，方便比較不同實驗設定。
 
-目前內建的範例是由程式產生的灰階合成口內影像與牙齒 reference mask；也可以匯入 PNG 或 JPEG 影像進行測試。
+工作站預設不載入任何影像。可從已連線的本機服務選擇資料集影像，或匯入 PNG、JPEG 影像進行測試。
 
 ## Getting Started
 
@@ -31,6 +31,16 @@ Rosaray 的目標是把口內影像分析所需的工作集中在同一個研究
 - npm
 
 ### Install and run
+
+可直接從專案根目錄執行啟動腳本；它會在首次使用時安裝相依套件、啟動本機後端服務並開啟已連線的瀏覽器工作站：
+
+```bash
+./scripts/launch.sh
+```
+
+腳本會要求設定 Rosaray 專案密碼，用於加密本機儲存的資料；請在每次開啟同一個專案時輸入相同密碼。若要在非互動環境啟動，請先設定 `ROSARAY_PASSPHRASE`。
+
+或手動啟動：
 
 在專案根目錄執行：
 
@@ -52,7 +62,7 @@ npm run preview
 
 ### First experiment
 
-1. 開啟工作站後，從左側 Explorer 選擇一張內建範例影像。
+1. 開啟工作站後，從左側 Explorer 匯入影像，或從 Dataset 選擇本機服務中的影像。
 2. 在右側 Pipeline 檢查預設流程：`Image source → Normalize → Gaussian blur → Threshold → Morphology → Area measurement`。
 3. 在 Inspector 調整節點參數，或從 Algorithms 拖曳新的節點到 pipeline。
 4. 按下 **Run pipeline**（`⌘/Ctrl + Enter`）。
@@ -64,7 +74,7 @@ npm run preview
 
 ### Image workspace
 
-- 內建多張合成口內影像，包含不同病患、視角與 train / validation / test split。
+- 預設為空白工作區；可載入本機服務中的資料集影像或匯入 PNG、JPEG。
 - 支援 PNG、JPEG 匯入。
 - 支援影像分頁、縮放、平移、Fit to window 與 1:1 檢視。
 - 可切換原始影像、pipeline 輸出與預測 mask overlay。
@@ -105,7 +115,7 @@ frontend/
     ├── main.js         # UI、影像檢視器、pipeline 與 run state
     ├── registry.js     # 節點定義、參數與執行邏輯
     ├── algo.js         # blur、Otsu、morphology、components、Dice
-    ├── samples.js      # 合成範例影像與 reference mask
+    ├── samples.js      # 使用者匯入與本機服務載入的影像 registry
     ├── styles.css      # 工作站介面樣式
     └── util.js         # 共用 UI 與工具函式
 ```
@@ -117,7 +127,7 @@ frontend/
 - 演算法執行在瀏覽器端，尚無正式後端 API。
 - **Import Model**、**Save Project**、**Export Bundle** 與 Evidence 搜尋目前是介面預留功能。
 - ONNX segmentation 節點需要模型資產與後端／載入流程，現階段不會實際執行。
-- 內建影像與 reference mask 是合成資料，不代表真實臨床資料表現。
+- 工作站不會預設載入影像；匯入與本機服務資料的用途及效能仍需由研究者自行驗證。
 
 ## License
 

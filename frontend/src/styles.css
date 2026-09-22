@@ -98,6 +98,8 @@ button{cursor:pointer}
 .seg button{background:none;border:0;padding:2px 11px;border-right:1px solid var(--line);color:var(--dim)}
 .seg button:last-child{border-right:0}
 .seg button.on{background:var(--accent-soft);color:var(--text)}
+.seg button:disabled{opacity:.4;cursor:not-allowed}
+.btn:disabled{opacity:.5;cursor:not-allowed;filter:none}
 .tb{background:none;border:1px solid transparent;border-radius:5px;padding:2px 8px;color:var(--dim)}
 .tb:hover{border-color:var(--line);color:var(--text)}
 #tools .sp{flex:1}
