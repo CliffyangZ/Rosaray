@@ -4,6 +4,10 @@
   <a href=".github/icon.png"><img src=".github/icon.png" alt="Rosaray icon" width="160"></a>
 </p>
 
+<p align="center">
+  <a href="https://cliffyangz.github.io/Rosaray/"><img src="https://img.shields.io/badge/docs-Rosaray-ea7233?logo=readthedocs&logoColor=white&label=docs" alt="Rosaray docs"></a>
+</p>
+
 Rosaray 是一個以瀏覽器為介面的本機優先（local-first）口內影像研究工作站，協助研究者匯入口內照片、組合影像處理流程、觀察分割結果，並記錄可重現的實驗指標。
 
 目前專案聚焦於「影像分析研究工作流」的前端原型，尚未連接正式後端、雲端儲存或臨床診斷服務。Rosaray 僅供研究與展示使用，不能取代醫師判讀或作為醫療診斷依據。
