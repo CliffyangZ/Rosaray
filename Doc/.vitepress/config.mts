@@ -4,9 +4,9 @@ export default defineConfig({
   lang: 'zh-TW',
   title: 'Rosaray',
   description: '本機優先（local-first）口內影像研究工作站 — 文件',
-  base: '/ToothAI_Project/',
+  base: '/Rosaray/',
   cleanUrls: true,
-  head: [['link', { rel: 'icon', type: 'image/png', href: '/ToothAI_Project/icon.png' }]],
+  head: [['link', { rel: 'icon', type: 'image/png', href: '/Rosaray/icon.png' }]],
 
   themeConfig: {
     logo: '/icon.png',
@@ -107,7 +107,7 @@ export default defineConfig({
     },
 
     socialLinks: [
-      { icon: 'github', link: 'https://github.com/CliffyangZ/ToothAI_Project' },
+      { icon: 'github', link: 'https://github.com/CliffyangZ/Rosaray' },
     ],
 
     search: {

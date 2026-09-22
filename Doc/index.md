@@ -36,4 +36,4 @@ Rosaray 僅供研究與展示使用，不能取代醫師判讀或作為醫療診
 - **架構** — 對應 `specs/Rosaray/system_architecture.canvas` 的文字規格，涵蓋 Core、Algorithm、Execution、Data、Presentation 各層元件。
 - **Data Layer 規格** — 目前進行中的功能設計（`specs/001-data-layer-design`），包含需求、研究決策、資料模型與實作計畫。
 
-查看原始碼：[:github: CliffyangZ/ToothAI_Project](https://github.com/CliffyangZ/ToothAI_Project)
+查看原始碼：[:github: CliffyangZ/Rosaray](https://github.com/CliffyangZ/Rosaray)
