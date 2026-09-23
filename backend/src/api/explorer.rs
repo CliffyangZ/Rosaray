@@ -41,7 +41,9 @@ pub struct DatasetsResponse {
 /// Dataset discovery (US2 acceptance scenario 1): lets Explorer list
 /// existing Datasets on startup without requiring a fresh import to learn
 /// their identity first.
-pub async fn list_datasets(State(state): State<AppState>) -> Result<Json<DatasetsResponse>, ServiceError> {
+pub async fn list_datasets(
+    State(state): State<AppState>,
+) -> Result<Json<DatasetsResponse>, ServiceError> {
     let db = state.db.lock().unwrap();
     let datasets = dataset_repo::list_datasets_for_project(&db, state.project_id)
         .map_err(|_| ServiceError::ServiceUnavailable)?

@@ -1,4 +1,5 @@
 import {boxBlur,otsu,morph,components} from './algo.js';
+import {request,subscribeEvents} from './service_client.js';
 
 export const DEFS={
   source:{label:'Image source',cat:'Data',in:null,out:'Image2D',params:[]},
@@ -26,5 +27,70 @@ export function exec(type,p,inp,ctx){
   if(type==='morphology')return{...inp,d:morph(inp.d,inp.w,inp.h,p.op,p.radius)};
   if(type==='onnx')throw new Error('ONNX segmentation: no model asset attached. Import an .onnx model first (File → Import Model).');
   if(type==='area'){let n=0;for(const v of inp.d)n+=v;return{kind:'table',w:inp.w,h:inp.h,rows:{px:n,mm2:n*p.spacing*p.spacing,cc:components(inp.d,inp.w,inp.h)}}}
+}
+
+// ---- Preview request flow (User Story 3, contracts/local-service-api.md
+// §Preview, event-bus.md). The Local Rosaray Service owns content-
+// equivalence caching and execution; this layer only tracks which request
+// is "current" per (image_asset_id, target_node_id) selection so a
+// preview_ready/preview_failed event for a since-superseded selection is
+// discarded rather than displayed as current (FR-017).
+
+const latestRequestBySelection=new Map();
+let unsubscribePreviewEvents=null;
+
+const selectionKey=(imageAssetId,targetNodeId)=>`${imageAssetId}::${targetNodeId}`;
+
+/**
+ * Fires `POST /preview` for `targetNodeId` against `pipelineSnapshot`
+ * (the `{nodes, edges}` graph shape from data-model.md PipelineSnapshot).
+ * Resolves to `{state:'ready', artifactRef, reused, requestContextId}` or
+ * `{state:'stale', error, failingNodeId, lastSuccessfulArtifactRef}` —
+ * never throws for a pipeline-level failure, only for a transport/session
+ * error (ServiceError, per service_client.js).
+ */
+export async function requestPreview(imageAssetId,targetNodeId,pipelineSnapshot){
+  const key=selectionKey(imageAssetId,targetNodeId);
+  const body=await request('POST','/preview',{
+    image_asset_id:imageAssetId,
+    target_node_id:targetNodeId,
+    pipeline_snapshot:pipelineSnapshot,
+  });
+
+  if(body.request_context_id)latestRequestBySelection.set(key,body.request_context_id);
+
+  if(body.state==='stale')return{
+    state:'stale',
+    error:body.error,
+    failingNodeId:body.failing_node_id,
+    lastSuccessfulArtifactRef:body.last_successful_artifact_ref??null,
+  };
+  return{
+    state:'ready',
+    artifactRef:body.artifact_ref,
+    reused:body.reused,
+    requestContextId:body.request_context_id,
+  };
+}
+
+/**
+ * Subscribes to `preview_ready`/`preview_failed` Event Bus notifications,
+ * invoking `onEvent({type, imageAssetId, targetNodeId, ...payload})` only
+ * when the event's `request_context_id` still matches the latest request
+ * issued for that `(image_asset_id, target_node_id)` selection — any other
+ * event is a late arrival for a superseded selection and is silently
+ * dropped, never treated as an error (event-bus.md, FR-017). Returns an
+ * unsubscribe function; only one subscription is active at a time.
+ */
+export function watchPreviewEvents(onEvent){
+  unsubscribePreviewEvents?.();
+  unsubscribePreviewEvents=subscribeEvents((event)=>{
+    if(event.type!=='preview_ready'&&event.type!=='preview_failed')return;
+    const{image_asset_id:imageAssetId,target_node_id:targetNodeId,request_context_id:requestContextId}=event.payload;
+    const key=selectionKey(imageAssetId,targetNodeId);
+    if(latestRequestBySelection.get(key)!==requestContextId)return;
+    onEvent({type:event.type,imageAssetId,targetNodeId,requestContextId,payload:event.payload});
+  });
+  return unsubscribePreviewEvents;
 }
 

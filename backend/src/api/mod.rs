@@ -1,6 +1,7 @@
 pub mod artifacts;
 pub mod explorer;
 pub mod import;
+pub mod preview;
 pub mod session;
 
 use axum::extract::{Path, State};
@@ -16,7 +17,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use uuid::Uuid;
 
 use crate::crypto::MasterKey;
+use crate::data_engine::preview::RequestIsolation;
 use crate::data_repository::blob_store::BlobStore;
+use crate::data_repository::memory_cache::PreviewCache;
 use crate::domain::{ArtifactKind, ArtifactReference, ServiceError};
 use session::SessionState;
 
@@ -38,6 +41,12 @@ pub struct AppStateInner {
     /// In-flight cancellable requests (thumbnail/display generation),
     /// keyed by the `request_id` handed back to the caller (FR-048).
     pub pending_requests: Mutex<HashMap<Uuid, Arc<AtomicBool>>>,
+    /// Volatile Preview cache, keyed by content-equivalence (FR-011/FR-013,
+    /// User Story 3). Never persisted, never consulted by official Runs.
+    pub preview_cache: PreviewCache,
+    /// Tracks the latest in-flight Preview request per selection so a
+    /// superseded completion never overwrites a fresher result (FR-017).
+    pub preview_isolation: RequestIsolation,
 }
 
 impl AppStateInner {
@@ -114,6 +123,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(import::router())
         .merge(explorer::router())
         .merge(artifacts::router())
+        .merge(preview::router())
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,

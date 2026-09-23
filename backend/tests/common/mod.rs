@@ -45,6 +45,8 @@ pub async fn spawn() -> TestService {
         pending_batch_paths: Default::default(),
         artifact_registry: Default::default(),
         pending_requests: Default::default(),
+        preview_cache: Default::default(),
+        preview_isolation: Default::default(),
     }));
 
     let router = rosaray_service::api::build_router(state);
