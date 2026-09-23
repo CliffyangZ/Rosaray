@@ -2,6 +2,7 @@ pub mod artifacts;
 pub mod explorer;
 pub mod import;
 pub mod preview;
+pub mod runs;
 pub mod session;
 
 use axum::extract::{Path, State};
@@ -124,6 +125,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(explorer::router())
         .merge(artifacts::router())
         .merge(preview::router())
+        .merge(runs::router())
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,

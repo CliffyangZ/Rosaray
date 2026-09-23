@@ -15,6 +15,8 @@ let svcDatasets=[],svcDatasetId=null,svcVersions=[],svcVersionId=null,svcImages=
 let svcOpenReqId=0; // bumped per svcOpenImage() call so a slower, superseded request can never overwrite a newer selection (FR-039)
 const svcThumbRequests=new Map(); // image_id -> in-flight request_id, for scroll-away cancellation
 const svcThumbCache=new Map(); // image_id -> data URL, so re-rendering the list doesn't re-fetch
+// ---- local service official Runs (User Story 4) ----
+let svcRuns=[]; // GET /runs?dataset_version_id= results for the selected Dataset Version — durable, traceable, distinct from the local in-browser `runs` prototype above (Constitution Principle III)
 function resetGraph(){
   nodes=[];edges=[];uid=1;
   const seq=[['source',12,10],['normalize',176,84],['gaussian',12,158],['threshold',176,232],['morphology',12,306],['area',176,380]];
@@ -70,7 +72,7 @@ async function svcListImages(){
   try{const r=await svc.request('GET',`/dataset-versions/${svcVersionId}/images`);svcImages=r.images}
   catch(e){toast('Could not load images: '+e.message,true);svcImages=[]}
 }
-async function svcSelectVersion(id){svcVersionId=id;await svcListImages();renderLeft()}
+async function svcSelectVersion(id){svcVersionId=id;await svcListImages();svcRuns=[];if(btab==='runs')await svcRefreshRuns();renderLeft()}
 
 async function svcScanFolder(path){
   try{
@@ -138,9 +140,53 @@ function svcCancelThumbnail(imageId){
   if(reqId){svc.request('DELETE',`/requests/${reqId}`).catch(()=>{});svcThumbRequests.delete(imageId)}
 }
 
+// ---- official Runs against the Local Rosaray Service (User Story 4) ----
+// Converts the client-side node graph into the `PipelineGraph` shape
+// (domain/pipeline_snapshot.rs) the service hashes into a content-
+// equivalence key — the same shape both `POST /preview` and `POST /runs`
+// take, so an official Run and a Preview of the same inputs agree.
+function toPipelineGraph(){
+  return{
+    nodes:nodes.map(n=>({node_id:n.id,node_type:n.type,implementation_version:'1',canonical_parameters:n.params||{},reproducible:true})),
+    edges:edges.map(e=>({from:e.from,to:e.to})),
+  };
+}
+// The pipeline's sink (no outgoing edge) is the Run's `target_node_id` —
+// there is exactly one per the single-input-edge graph shape this UI builds.
+const sinkNode=()=>nodes.find(n=>!edges.some(e=>e.from===n.id))||nodes[nodes.length-1];
+
+async function svcRunOfficial(){
+  const s=activeSample();
+  if(!s||!s.serviceImageId){toast('Open an image from the Dataset panel first — official Runs need a service-backed image.',true);return}
+  if(!svcVersionId){toast('No Dataset Version selected.',true);return}
+  const bad=validateGraph();if(bad){toast(bad,true);return}
+  const target=sinkNode();if(!target){toast('Pipeline has no nodes to run.',true);return}
+  try{
+    const r=await svc.request('POST','/runs',{
+      dataset_version_id:svcVersionId,image_asset_id:s.serviceImageId,
+      pipeline_snapshot:toPipelineGraph(),target_node_id:target.id,seed:42,
+      run_policy:{retain_intermediates:false},
+    });
+    toast(`Official Run started: ${r.run_id.slice(0,8)}…`);
+    setB('runs');
+  }catch(e){toast('Could not start official Run: '+e.message,true)}
+}
+async function svcRefreshRuns(){
+  if(!svc.isConnected()||svc.currentSessionState()!=='ready'||!svcVersionId){svcRuns=[];return}
+  try{const r=await svc.request('GET',`/runs?dataset_version_id=${svcVersionId}`);svcRuns=r.runs}
+  catch{svcRuns=[]}
+}
+
 let lastSvcState=null;
 svc.subscribeEvents(
-  ev=>{if(ev.type==='thumbnail_ready'){const el=$(`[data-thumb-for="${ev.payload.image_asset_id}"]`);if(el)svcLoadThumbnail(ev.payload.image_asset_id,el)}},
+  ev=>{
+    if(ev.type==='thumbnail_ready'){const el=$(`[data-thumb-for="${ev.payload.image_asset_id}"]`);if(el)svcLoadThumbnail(ev.payload.image_asset_id,el);return}
+    if(ev.type==='run_completed'||ev.type==='run_failed'){
+      if(ev.type==='run_failed')toast('Official Run failed: '+(ev.payload.error_summary||'unknown error'),true);
+      else toast('Official Run completed');
+      svcRefreshRuns().then(()=>{if(btab==='runs')renderBottom()});
+    }
+  },
   state=>{const wasDown=lastSvcState&&lastSvcState!=='ready';lastSvcState=state;
     if(leftView==='data')renderLeft();
     paint(); // refresh the stale-content banner if the open image came from the service
@@ -148,6 +194,7 @@ svc.subscribeEvents(
       // Reconnection procedure (event-bus.md): never trust stale data — re-fetch on the transition back to ready.
       if(!svcDatasetId)svcListDatasets();
       else if(wasDown)svcListVersions();
+      if(wasDown&&btab==='runs')svcRefreshRuns().then(renderBottom);
     }
   }
 );
@@ -158,7 +205,7 @@ const MENUS={
   File:[['Import Image…','⌘O',()=>$('#file').click()],['Import Model (.onnx)…','',()=>toast('Model import goes through the local API: POST /api/projects/:id/assets')],'-',['Save Project','⌘S',()=>toast('Project saved to local SQLite (prototype)')],['Export Bundle (.mcv.zip)','',()=>toast('Bundle export: project.json, runs.json, report.md, assets/')]],
   Edit:[['Delete Selected Node','⌫',()=>delSel()],['Clear Pipeline','',()=>{nodes=[];edges=[];selId=null;renderGraph();toast('Pipeline cleared')}],['Reset Pipeline','',()=>{resetGraph();renderGraph();toast('Pipeline reset to default')}]],
   View:[['Toggle Side Bar','⌘B',()=>toggle('left')],['Toggle Pipeline Panel','⌥⌘B',()=>toggle('right')],['Toggle Bottom Panel','⌘J',()=>toggleBottom()],'-',['Fit Image to Window','',()=>fit()],['Actual Pixels (1:1)','',()=>zoomTo(1)],'-',['Theme: Light','',()=>setTheme('light')],['Theme: Dark','',()=>setTheme('dark')]],
-  Pipeline:[['Run Pipeline','⌘↵',()=>run()],['Validate Pipeline','',()=>{const e=validateGraph();toast(e||'Pipeline is valid: types match, no cycles',!!e)}]],
+  Pipeline:[['Run Pipeline','⌘↵',()=>run()],['Run via Service (official)…','',()=>svcRunOfficial()],['Validate Pipeline','',()=>{const e=validateGraph();toast(e||'Pipeline is valid: types match, no cycles',!!e)}]],
   Help:[['About Rosaray','',()=>toast('Rosaray — research prototype, not for diagnosis.')]]
 };
 function buildMenus(){
@@ -434,7 +481,7 @@ $('#runbtn').onclick=run;
 
 // ---- bottom panel ----
 let btab='metrics';
-function setB(k){btab=k;$$('#btabs button[data-b]').forEach(b=>b.classList.toggle('on',b.dataset.b===k));$('#bottom').classList.remove('hidden');renderBottom()}
+function setB(k){btab=k;$$('#btabs button[data-b]').forEach(b=>b.classList.toggle('on',b.dataset.b===k));$('#bottom').classList.remove('hidden');renderBottom();if(k==='runs')svcRefreshRuns().then(renderBottom)}
 $('#btabs').onclick=e=>{const b=e.target.closest('button');if(!b)return;if(b.id==='bclose')return toggleBottom();setB(b.dataset.b)};
 function renderBottom(){
   const B=$('#bbody');
@@ -450,7 +497,11 @@ function renderBottom(){
       <table class="tbl"><tr><th>Step</th><th>Node</th><th>ms</th></tr>${results.steps.map((s,i)=>`<tr><td>${i+1}</td><td>${DEFS[s.n.type].label}</td><td>${s.ms.toFixed(1)}</td></tr>`).join('')}</table>
       <div class="note">${results.notes.join(' · ')} · preview resolution</div>`;
   }else if(btab==='runs'){
-    B.innerHTML=runs.length?`<table class="tbl"><tr><th>Run</th><th>Image</th><th>Dice</th><th>Area mm²</th><th>Dataset fp</th><th>Graph</th><th>Time</th></tr>${runs.slice().reverse().map(r=>`<tr><td>${r.id}</td><td>${r.img}</td><td>${r.dice==null?'—':r.dice.toFixed(3)}</td><td>${r.area==null?'—':r.area.toFixed(1)}</td><td>${r.fp}</td><td>${r.graph}</td><td>${r.t.toLocaleTimeString()}</td></tr>`).join('')}</table><div class="note">Runs are immutable snapshots: graph, parameters, dataset fingerprint and seed.</div>`:'<div class="note">No runs yet.</div>';
+    const local=runs.length?`<table class="tbl"><tr><th>Run</th><th>Image</th><th>Dice</th><th>Area mm²</th><th>Dataset fp</th><th>Graph</th><th>Time</th></tr>${runs.slice().reverse().map(r=>`<tr><td>${r.id}</td><td>${r.img}</td><td>${r.dice==null?'—':r.dice.toFixed(3)}</td><td>${r.area==null?'—':r.area.toFixed(1)}</td><td>${r.fp}</td><td>${r.graph}</td><td>${r.t.toLocaleTimeString()}</td></tr>`).join('')}</table><div class="note">Runs are immutable snapshots: graph, parameters, dataset fingerprint and seed.</div>`:'<div class="note">No runs yet.</div>';
+    const svcSection=svc.isConnected()?`<div class="sh" style="margin-top:10px"><span>Official Runs (service)</span><button class="tb" title="Run current pipeline as an official Run" id="svcrunbtn">▶</button></div>`+
+      (svcRuns.length?`<table class="tbl"><tr><th>Run</th><th>Status</th><th>Seed</th><th>Dataset fp</th><th>Started</th><th>Note</th></tr>${svcRuns.slice().reverse().map(r=>`<tr><td class="mono">${r.id.slice(0,8)}</td><td>${r.status}${r.status==='running'?' …':''}</td><td>${r.seed}</td><td class="mono">${r.dataset_fingerprint.slice(0,10)}</td><td>${new Date(r.started_at).toLocaleTimeString()}</td><td>${r.error_summary||'—'}</td></tr>`).join('')}</table><div class="note">Official Runs are durable and fully traceable — dataset fingerprint, image, pipeline and seed are recorded atomically on success (FR-018/FR-020).</div>`:'<div class="note">No official Runs yet for this Dataset Version. Open a Dataset image, then Pipeline → Run via Service (official).</div>'):'';
+    B.innerHTML=local+svcSection;
+    $('#svcrunbtn',B)&&($('#svcrunbtn').onclick=()=>svcRunOfficial());
   }else{
     const byPatient={};samples.forEach(s=>(byPatient[s.patient]??=new Set()).add(s.split));
     const leak=Object.entries(byPatient).filter(([p,v])=>p!=='—'&&v.size>1);

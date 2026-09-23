@@ -36,6 +36,12 @@ async fn run(project_dir: PathBuf) {
     let db_path = project_dir.join("rosaray.sqlite3");
     let db = sqlite::open(&db_path).expect("failed to open/migrate project database");
     let project_id = sqlite::ensure_default_project(&db).expect("failed to bootstrap project row");
+    // FR-020: a fresh process start means no `running` Run Record can
+    // actually still be executing — reconcile any left over from a killed
+    // prior process to `failed` rather than leaving them looking
+    // perpetually in-progress or, worse, ever promoting them to `succeeded`.
+    rosaray_service::data_repository::sqlite::run_repo::recover_interrupted_runs(&db)
+        .expect("failed to reconcile interrupted runs");
 
     let blob_store =
         BlobStore::new(project_dir.join("blobs")).expect("failed to initialize blob store");

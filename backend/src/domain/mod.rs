@@ -2,6 +2,7 @@ pub mod content_identity;
 pub mod dataset;
 pub mod display;
 pub mod pipeline_snapshot;
+pub mod run;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

@@ -1,4 +1,5 @@
 pub mod dataset_repo;
+pub mod run_repo;
 pub mod thumbnail_repo;
 
 use rusqlite::{Connection, OptionalExtension};
@@ -23,6 +24,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0004_thumbnails",
         include_str!("migrations/0004_thumbnails.sql"),
     ),
+    ("0005_runs", include_str!("migrations/0005_runs.sql")),
 ];
 
 pub fn open(path: &std::path::Path) -> rusqlite::Result<Connection> {
