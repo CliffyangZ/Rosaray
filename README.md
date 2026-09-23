@@ -12,9 +12,13 @@ Rosaray 是一個以瀏覽器為介面的本機優先（local-first）口內影�
 
 目前專案聚焦於「影像分析研究工作流」的前端原型，尚未連接正式後端、雲端儲存或臨床診斷服務。Rosaray 僅供研究與展示使用，不能取代醫師判讀或作為醫療診斷依據。
 
+## Current status
+
+目前以 Rust 開發後端的 Data Layer 與前端的交互運作。
+
 ## Introduction
 
-Rosaray 的目標是把口內影像分析所需的工作集中在同一個研究介面中：
+Rosaray 的目標是把醫療影像分析所需的工作集中在同一個研究介面中：
 
 - 以影像檢視器查看原始影像、處理後影像與 mask overlay。
 - 以可視化 pipeline 組合前處理、分割與量化步驟。
@@ -104,30 +108,6 @@ npm run preview
 - 以 dataset fingerprint 辨識資料集設定變更。
 - Validation 面板檢查 patient 是否跨 split、reference mask 是否配對，以及 pipeline 是否有效。
 - 對缺少 patient ID 的匯入影像顯示提醒。
-
-## Project structure
-
-```text
-frontend/
-├── index.html          # 工作站入口
-├── package.json        # Vite scripts 與依賴
-└── src/
-    ├── main.js         # UI、影像檢視器、pipeline 與 run state
-    ├── registry.js     # 節點定義、參數與執行邏輯
-    ├── algo.js         # blur、Otsu、morphology、components、Dice
-    ├── samples.js      # 使用者匯入與本機服務載入的影像 registry
-    ├── styles.css      # 工作站介面樣式
-    └── util.js         # 共用 UI 與工具函式
-```
-
-## Current status
-
-目前版本是可在瀏覽器執行的前端研究原型：
-
-- 演算法執行在瀏覽器端，尚無正式後端 API。
-- **Import Model**、**Save Project**、**Export Bundle** 與 Evidence 搜尋目前是介面預留功能。
-- ONNX segmentation 節點需要模型資產與後端／載入流程，現階段不會實際執行。
-- 工作站不會預設載入影像；匯入與本機服務資料的用途及效能仍需由研究者自行驗證。
 
 ## License
 
