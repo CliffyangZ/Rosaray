@@ -3,8 +3,8 @@ layout: home
 
 hero:
   name: "Rosaray"
-  text: "本機優先的口內影像研究工作站"
-  tagline: 匯入口內照片、組合影像處理流程、觀察分割結果，並記錄可重現的實驗指標。
+  text: "本機運行的醫療影像研究工作站"
+  tagline: 匯入資料、組合影像處理流程、觀察分割結果，並記錄可重現的實驗指標。
   actions:
     - theme: brand
       text: 快速開始
@@ -14,9 +14,9 @@ hero:
       link: /architecture/overview
 
 features:
-  - title: 本機優先、離線可用
+  - title: 本機運行、離線可用
     details: 所有演算法在瀏覽器端執行，匯入、預覽、正式執行與儲存都不需要網路連線，也不自動上傳資料。
-  - title: 積木式 Pipeline
+  - title: 積木式 Pipeline 演算法設計
     details: 以節點組合前處理、分割與量化步驟，透過 typed ports 連接，並支援 cycle、型別與來源唯一性驗證。
   - title: 可重現的實驗紀錄
     details: 每次正式 Run 保存 run ID、dataset fingerprint、pipeline graph hash、seed 與執行時間，方便比較不同實驗設定。
