@@ -34,7 +34,7 @@ async fn run(project_dir: PathBuf) {
     let master_key = load_or_init_master_key(&project_dir);
 
     let db_path = project_dir.join("rosaray.sqlite3");
-    let db = sqlite::open(&db_path).expect("failed to open/migrate project database");
+    let db = sqlite::open(&db_path, &master_key).expect("failed to open/migrate project database");
     let project_id = sqlite::ensure_default_project(&db).expect("failed to bootstrap project row");
     // FR-020: a fresh process start means no `running` Run Record can
     // actually still be executing — reconcile any left over from a killed
@@ -57,6 +57,7 @@ async fn run(project_dir: PathBuf) {
         master_key,
         event_tx,
         project_id,
+        exports_dir: project_dir.join("exports"),
         pending_batches: Default::default(),
         pending_batch_paths: Default::default(),
         artifact_registry: Default::default(),

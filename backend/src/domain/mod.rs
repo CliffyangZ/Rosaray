@@ -65,6 +65,14 @@ pub enum ServiceError {
     ServiceUnavailable,
     #[error("access denied")]
     AccessDenied,
+    /// Export Bundle failed its integrity or content-association checks
+    /// (FR-027) — the contract's "tamper" error.
+    #[error("bundle tampered")]
+    BundleTampered,
+    /// Export Bundle's data contract version is not readable by this
+    /// service (FR-027) — the contract's "version" error.
+    #[error("bundle incompatible")]
+    BundleIncompatible,
 }
 
 impl ServiceError {
@@ -81,6 +89,9 @@ impl ServiceError {
             ServiceError::Conflict => StatusCode::CONFLICT,
             ServiceError::ServiceUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             ServiceError::AccessDenied => StatusCode::UNAUTHORIZED,
+            ServiceError::BundleTampered | ServiceError::BundleIncompatible => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
         }
     }
 }
@@ -88,7 +99,6 @@ impl ServiceError {
 impl axum::response::IntoResponse for ServiceError {
     fn into_response(self) -> axum::response::Response {
         let status = self.http_status();
-        let body = serde_json::json!({ "error": &self });
-        (status, axum::Json(body)).into_response()
+        (status, axum::Json(self.body())).into_response()
     }
 }

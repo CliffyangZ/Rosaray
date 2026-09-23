@@ -12,9 +12,9 @@ name = "rosaray_service"
 path = "src/lib.rs"
 
 [dependencies]
-axum = { version = "0.7", features = ["ws"] }
+axum = { version = "0.7", features = ["ws", "multipart"] }
 tokio = { version = "1", features = ["full"] }
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.31", features = ["bundled-sqlcipher-vendored-openssl"] }
 image = "0.25"
 blake3 = "1"
 aes-gcm = "0.10"
@@ -31,4 +31,4 @@ base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "3"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "multipart"] }

@@ -1,5 +1,9 @@
 pub mod artifacts;
+pub mod cache;
+pub mod deletion;
+pub mod errors;
 pub mod explorer;
+pub mod export;
 pub mod import;
 pub mod preview;
 pub mod runs;
@@ -24,6 +28,10 @@ use crate::data_repository::memory_cache::PreviewCache;
 use crate::domain::{ArtifactKind, ArtifactReference, ServiceError};
 use session::SessionState;
 
+/// Per-batch import scratch state: `source_ref` → absolute path, plus the
+/// dataset display name the batch was previewed under.
+pub type PendingBatchPaths = Mutex<HashMap<Uuid, (HashMap<String, PathBuf>, String)>>;
+
 pub struct AppStateInner {
     pub session_token: String,
     pub session_state: RwLock<SessionState>,
@@ -32,8 +40,10 @@ pub struct AppStateInner {
     pub master_key: MasterKey,
     pub event_tx: tokio::sync::broadcast::Sender<crate::events::Event>,
     pub project_id: Uuid,
+    /// Where finished Export Bundles (ciphertext only) are written (FR-026).
+    pub exports_dir: PathBuf,
     pub pending_batches: import::PendingBatches,
-    pub pending_batch_paths: Mutex<HashMap<Uuid, (HashMap<String, PathBuf>, String)>>,
+    pub pending_batch_paths: PendingBatchPaths,
     /// Maps a short-lived `ArtifactReference.id` back to the actual content
     /// identity + kind it stands for, so `GET /artifacts/{id}/content` can
     /// resolve it — `ArtifactReference` is composed on request, not a
@@ -51,6 +61,32 @@ pub struct AppStateInner {
 }
 
 impl AppStateInner {
+    /// Deletes each blob no longer referenced by any official row or
+    /// thumbnail, and forgets any `ArtifactReference` that resolved to it —
+    /// so a removed result cannot still be fetched by a stale reference
+    /// (FR-030). Best-effort: an I/O failure leaves an orphan file, never a
+    /// dangling reference.
+    pub fn remove_unreferenced_blobs(&self, candidates: Vec<String>) {
+        use crate::data_repository::sqlite::housekeeping_repo as hk;
+        let mut gone = Vec::new();
+        {
+            let db = self.db.lock().unwrap();
+            for identity in candidates {
+                let held = hk::content_is_official(&db, &identity).unwrap_or(true)
+                    || hk::content_is_thumbnail(&db, &identity).unwrap_or(true);
+                if !held && self.blob_store.delete(&identity).is_ok() {
+                    gone.push(identity);
+                }
+            }
+        }
+        if !gone.is_empty() {
+            self.artifact_registry
+                .lock()
+                .unwrap()
+                .retain(|_, (identity, _)| !gone.contains(identity));
+        }
+    }
+
     pub fn register_artifact(
         &self,
         content_identity: String,
@@ -126,6 +162,9 @@ pub fn build_router(state: AppState) -> Router {
         .merge(artifacts::router())
         .merge(preview::router())
         .merge(runs::router())
+        .merge(export::router())
+        .merge(cache::router())
+        .merge(deletion::router())
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,

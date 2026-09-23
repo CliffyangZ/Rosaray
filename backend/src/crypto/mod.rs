@@ -4,6 +4,8 @@
 //! (DEK), which is itself wrapped (AES-256-GCM) under the master key. This
 //! lets a single blob be re-keyed without touching the rest of the project.
 
+pub mod export_key;
+
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use argon2::{Algorithm, Argon2, Params, Version};
@@ -41,6 +43,15 @@ impl MasterKey {
 
     pub fn as_bytes(&self) -> &[u8; MASTER_KEY_LEN] {
         &self.0
+    }
+
+    /// Raw 256-bit SQLCipher key (hex), domain-separated from the blob
+    /// key-wrapping use of the master key so the two can never be confused.
+    pub fn database_key_hex(&self) -> String {
+        blake3::derive_key("rosaray sqlcipher database key v1", &self.0)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
     }
 
     /// Wraps a fresh data-encryption key under this master key.

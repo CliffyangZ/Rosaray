@@ -171,6 +171,48 @@ async function svcRunOfficial(){
     setB('runs');
   }catch(e){toast('Could not start official Run: '+e.message,true)}
 }
+// ---- Export / Import bundles (User Story 5) ----
+// The export credential is independent of the project passphrase and is only
+// ever typed into the prompt and posted once — never stored (FR-035).
+async function svcExportBundle(){
+  if(!svc.isConnected()||svc.currentSessionState()!=='ready'){toast('Connect to the local service first.',true);return}
+  if(!svcVersionId){toast('Select a Dataset Version in the Dataset panel to export.',true);return}
+  await svcRefreshRuns();
+  const runIds=svcRuns.filter(r=>r.status==='succeeded').map(r=>r.id);
+  const credential=window.prompt(`Export credential for this bundle (${runIds.length} official Run${runIds.length===1?'':'s'} included). You will need it to open the bundle — it is not stored anywhere.`);
+  if(!credential)return;
+  try{
+    const {result,blob}=await svc.exportBundle([svcVersionId],runIds,credential);
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);a.download=`rosaray-${result.export_bundle_id.slice(0,8)}.rsybundle`;
+    document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+    toast(`Bundle exported — ${result.manifest.content_list.length} content items, Preview excluded`);
+  }catch(e){toast('Export failed: '+(e.code==='credential_required'?'a credential is required':e.message),true)}
+}
+const BUNDLE_IMPORT_ERRORS={
+  credential_invalid:'Wrong export credential — nothing was imported.',
+  credential_required:'A credential is required to open a bundle.',
+  bundle_tampered:'This bundle is damaged or has been modified — nothing was imported.',
+  bundle_incompatible:'This bundle was made with an incompatible data contract version — nothing was imported.'
+};
+async function svcImportBundleFile(file){
+  if(!file)return;
+  if(!svc.isConnected()||svc.currentSessionState()!=='ready'){toast('Connect to the local service first.',true);return}
+  const credential=window.prompt(`Export credential for ${file.name}:`);
+  if(!credential)return;
+  try{
+    const r=await svc.importBundle(file,credential);
+    toast(`Bundle imported — ${r.imported_dataset_version_ids.length} Dataset Version(s), ${r.imported_run_record_ids.length} Run(s)`);
+    await svcListDatasets();
+    renderLeft();
+  }catch(e){toast(BUNDLE_IMPORT_ERRORS[e.code]||('Import failed: '+e.message),true)}
+}
+function svcPickBundle(){
+  const input=document.createElement('input');
+  input.type='file';input.accept='.rsybundle';
+  input.onchange=()=>svcImportBundleFile(input.files[0]);
+  input.click();
+}
 async function svcRefreshRuns(){
   if(!svc.isConnected()||svc.currentSessionState()!=='ready'||!svcVersionId){svcRuns=[];return}
   try{const r=await svc.request('GET',`/runs?dataset_version_id=${svcVersionId}`);svcRuns=r.runs}
@@ -202,7 +244,7 @@ svc.subscribeEvents(
 
 // ---- menu bar ----
 const MENUS={
-  File:[['Import Image…','⌘O',()=>$('#file').click()],['Import Model (.onnx)…','',()=>toast('Model import goes through the local API: POST /api/projects/:id/assets')],'-',['Save Project','⌘S',()=>toast('Project saved to local SQLite (prototype)')],['Export Bundle (.mcv.zip)','',()=>toast('Bundle export: project.json, runs.json, report.md, assets/')]],
+  File:[['Import Image…','⌘O',()=>$('#file').click()],['Import Model (.onnx)…','',()=>toast('Model import goes through the local API: POST /api/projects/:id/assets')],'-',['Save Project','⌘S',()=>toast('Project saved to local SQLite (prototype)')],['Export Bundle…','',()=>svcExportBundle()],['Import Bundle…','',()=>svcPickBundle()]],
   Edit:[['Delete Selected Node','⌫',()=>delSel()],['Clear Pipeline','',()=>{nodes=[];edges=[];selId=null;renderGraph();toast('Pipeline cleared')}],['Reset Pipeline','',()=>{resetGraph();renderGraph();toast('Pipeline reset to default')}]],
   View:[['Toggle Side Bar','⌘B',()=>toggle('left')],['Toggle Pipeline Panel','⌥⌘B',()=>toggle('right')],['Toggle Bottom Panel','⌘J',()=>toggleBottom()],'-',['Fit Image to Window','',()=>fit()],['Actual Pixels (1:1)','',()=>zoomTo(1)],'-',['Theme: Light','',()=>setTheme('light')],['Theme: Dark','',()=>setTheme('dark')]],
   Pipeline:[['Run Pipeline','⌘↵',()=>run()],['Run via Service (official)…','',()=>svcRunOfficial()],['Validate Pipeline','',()=>{const e=validateGraph();toast(e||'Pipeline is valid: types match, no cycles',!!e)}]],

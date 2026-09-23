@@ -63,13 +63,16 @@ export async function request(method, path, body) {
   if (!isConnected()) throw new ServiceUnavailableError('not connected to the local service');
   let response;
   try {
+    // FormData bodies (bundle import) must go out untouched so the browser
+    // sets the multipart boundary itself.
+    const isForm = typeof FormData !== 'undefined' && body instanceof FormData;
     response = await fetch(baseUrl + path, {
       method,
       headers: {
         'X-Rosaray-Session': sessionToken,
-        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        ...(body !== undefined && !isForm ? { 'Content-Type': 'application/json' } : {}),
       },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      body: body === undefined ? undefined : isForm ? body : JSON.stringify(body),
     });
   } catch (err) {
     throw new ServiceUnavailableError(err.message);
@@ -112,6 +115,30 @@ export class ServiceUnavailableError extends ServiceError {
 export async function fetchArtifactObjectUrl(artifactId) {
   const blob = await request('GET', `/artifacts/${artifactId}/content`);
   return URL.createObjectURL(blob);
+}
+
+/**
+ * Export Bundle (User Story 5). Builds a bundle for the given Dataset
+ * Versions / Run Records under `credential`, then returns
+ * `{ result, blob }` — the manifest response plus the encrypted bundle file.
+ * The credential is sent once and never kept client-side.
+ */
+export async function exportBundle(datasetVersionIds, runRecordIds, credential) {
+  const result = await request('POST', '/export-bundles', {
+    dataset_version_ids: datasetVersionIds,
+    run_record_ids: runRecordIds,
+    credential,
+  });
+  const blob = await request('GET', `/export-bundles/${result.export_bundle_id}/content`);
+  return { result, blob };
+}
+
+/** Imports a bundle file (a `File`/`Blob`) with its export credential. */
+export async function importBundle(file, credential) {
+  const form = new FormData();
+  form.append('bundle', file);
+  form.append('credential', credential);
+  return request('POST', '/export-bundles/import', form);
 }
 
 function wsUrl(port, token) {

@@ -51,6 +51,20 @@ impl BlobStore {
         self.bin_path(content_identity).is_file()
     }
 
+    /// Removes a blob's key and ciphertext. Idempotent. Callers must first
+    /// establish that no official row still references `content_identity`
+    /// (FR-030: no orphaned-but-resolvable references).
+    pub fn delete(&self, content_identity: &str) -> io::Result<()> {
+        for path in [self.bin_path(content_identity), self.key_path(content_identity)] {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
     /// Writes `bytes` under their own content identity. Idempotent: writing
     /// the same content identity again is a no-op (the store is
     /// content-addressed, so identical bytes never need re-encryption).

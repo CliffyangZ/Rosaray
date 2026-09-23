@@ -40,6 +40,12 @@ impl PreviewCache {
         self.entries.lock().unwrap().clear();
     }
 
+    /// Like `clear`, but returns what was dropped so `POST /cache/clear` can
+    /// report exactly which node/image pairs now need recomputation.
+    pub fn drain(&self) -> Vec<PreviewCacheEntry> {
+        self.entries.lock().unwrap().drain().map(|(_, v)| v).collect()
+    }
+
     pub fn len(&self) -> usize {
         self.entries.lock().unwrap().len()
     }
