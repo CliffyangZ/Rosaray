@@ -212,6 +212,8 @@ mod tests {
             } else {
                 MetadataStatus::Incomplete
             },
+            pixel_spacing_mm: None,
+            spacing_source: None,
         }
     }
 

@@ -1,10 +1,15 @@
+pub mod algopipe_run;
 pub mod artifacts;
 pub mod cache;
 pub mod deletion;
+pub mod designer;
 pub mod errors;
 pub mod explorer;
 pub mod export;
 pub mod import;
+pub mod kb;
+pub mod papers;
+pub mod pipe_preview;
 pub mod preview;
 pub mod runs;
 pub mod session;
@@ -42,6 +47,9 @@ pub struct AppStateInner {
     pub project_id: Uuid,
     /// Where finished Export Bundles (ciphertext only) are written (FR-026).
     pub exports_dir: PathBuf,
+    /// Root of the plain-file Knowledge Base tree, `<project>/knowledge-base/`
+    /// (feature 002, research §5). The derived catalog lives in `db`.
+    pub kb_root: PathBuf,
     pub pending_batches: import::PendingBatches,
     pub pending_batch_paths: PendingBatchPaths,
     /// Maps a short-lived `ArtifactReference.id` back to the actual content
@@ -58,6 +66,20 @@ pub struct AppStateInner {
     /// Tracks the latest in-flight Preview request per selection so a
     /// superseded completion never overwrites a fresher result (FR-017).
     pub preview_isolation: RequestIsolation,
+    /// Lossless per-node Preview results for AlgoPipe drafts (feature 002).
+    /// Memory only, like `preview_cache`; never consulted by official Runs.
+    pub preview_nodes: crate::designer::preview::NodeCache,
+    /// Per-pipe, per-node Preview status (idle/stale/queued/running/ready/…).
+    pub preview_board: crate::designer::preview::PreviewBoard,
+    /// Test hook: artificial delays (ms) applied to the next Preview requests,
+    /// to exercise out-of-order completion (SC-004). Empty in production.
+    pub preview_delays: Mutex<std::collections::VecDeque<u64>>,
+    /// In-flight paper extractions by `extraction_id`, so one can be cancelled
+    /// cooperatively (US5-6). Volatile.
+    pub extractions: Mutex<HashMap<Uuid, Arc<AtomicBool>>>,
+    /// Test hook: per-page delay (ms) in an extraction pass, so tests can cancel
+    /// one mid-flight. Zero in production.
+    pub extraction_delay_ms: std::sync::atomic::AtomicU64,
 }
 
 impl AppStateInner {
@@ -165,6 +187,9 @@ pub fn build_router(state: AppState) -> Router {
         .merge(export::router())
         .merge(cache::router())
         .merge(deletion::router())
+        .merge(kb::router())
+        .merge(designer::router())
+        .merge(papers::router())
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,

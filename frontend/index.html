@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<script src="https://mcp.figma.com/mcp/html-to-design/capture.js" async></script>
 </head>
 <body>
 <div id="app">
@@ -16,10 +17,22 @@
   <div id="work">
     <nav id="activity" aria-label="Activity"></nav>
 
+    <section id="dataset-page" aria-label="Dataset workspace">
+      <div class="workspace-main">
+        <header class="workspace-toolbar"><strong>Dataset</strong><span class="toolbar-path mono">LOCAL / DATA</span><button class="tb toolbar-action" id="import-focus">＋ 匯入影像</button></header>
+        <div class="workspace-scroll" id="dataset-content"></div>
+      </div>
+      <aside class="workspace-detail" id="dataset-detail" aria-label="Selected image details"></aside>
+    </section>
+
     <aside id="left" class="side" aria-label="Project side bar"></aside>
     <div class="rz" data-target="left"></div>
 
     <main id="center">
+      <section id="designer-home" aria-label="Algorithm catalog">
+        <div class="workspace-toolbar"><strong>Knowledge Base</strong><span class="toolbar-path mono">ALGORITHMS / READ ONLY</span></div>
+        <div class="designer-intro" id="kb-detail"></div>
+      </section>
       <div id="tabs"></div>
       <div id="tools">
         <div class="seg" id="modes">
@@ -30,10 +43,11 @@
         <button class="tb" id="zfit" title="Fit to window">Fit</button>
         <button class="tb" id="z1" title="Actual pixels">1:1</button>
         <span class="sp"></span>
-        <button class="btn" id="runbtn" title="Ctrl/⌘ + Enter">▶ Run pipeline</button>
+        <button class="btn" id="runbtn" title="Run selected published AlgoPipe">▶ 正式執行</button>
       </div>
       <div id="stagewrap">
         <div id="stage"><canvas id="cv"></canvas></div>
+        <div id="analysis-empty" hidden><div class="empty-glyph" aria-hidden="true">□</div><strong>尚未開啟影像</strong><span>從 Dataset 選擇目前版本中的影像開始分析。</span><button class="btn ghost" id="choose-analysis-image">前往 Dataset</button></div>
         <div id="hud"></div>
         <div id="legend"></div>
         <div id="scalebar"></div>
@@ -53,6 +67,8 @@
 
     <div class="rz" data-target="right"></div>
     <aside id="right" class="side" aria-label="Pipeline side bar">
+      <section id="context-panel" aria-label="Workspace context"><div id="result-context"></div></section>
+      <div id="legacy-pipeline">
       <div class="sh"><span>Pipeline</span><span class="mono" id="gstat">6 nodes</span></div>
       <details class="sec" open style="border-top:0">
         <summary>Algorithms <span class="count">drag to canvas</span></summary>
@@ -63,11 +79,12 @@
         <div class="sh"><span id="ititle">Inspector</span><span class="mono" id="isub"></span></div>
         <div class="scroll" id="ibody"></div>
       </div>
+      </div>
     </aside>
   </div>
 
   <div id="status">
-    <span>● Local-first · 127.0.0.1:4310</span>
+    <span id="service-status">Local Service · 未連線</span>
     <span class="mono" id="px">—</span>
     <span class="sp"></span>
     <span>Research use only — not for diagnosis</span>

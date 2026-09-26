@@ -1,0 +1,230 @@
+# Technical-verification cases for this node's built-in implementation.
+# Expected values were produced independently by the prototype's JavaScript
+# (frontend/src/algo.js), so they are not derived from the Rust executor under test.
+{
+ "schema": "quantify-kb/1",
+ "cases": [
+  {
+   "name": "area with 0.05 mm spacing",
+   "context": {
+    "pixel_spacing_mm": [
+     0.05,
+     0.05
+    ]
+   },
+   "inputs": {
+    "mask": {
+     "kind": "mask2d",
+     "width": 8,
+     "height": 6,
+     "data": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      1,
+      1,
+      0,
+      0,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      0,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      0,
+      1,
+      1,
+      1,
+      0,
+      1,
+      1,
+      0,
+      0,
+      1,
+      1,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      1,
+      1,
+      1,
+      0,
+      0,
+      0,
+      0,
+      0
+     ]
+    }
+   },
+   "parameters": {},
+   "expect": {
+    "outputs": {
+     "measurements": {
+      "kind": "table",
+      "rows": {
+       "pixels": 24,
+       "mm2": 0.06000000000000001,
+       "components": 1
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "empty mask (boundary)",
+   "context": {
+    "pixel_spacing_mm": [
+     0.05,
+     0.05
+    ]
+   },
+   "inputs": {
+    "mask": {
+     "kind": "mask2d",
+     "width": 8,
+     "height": 6,
+     "data": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ]
+    }
+   },
+   "parameters": {},
+   "expect": {
+    "outputs": {
+     "measurements": {
+      "kind": "table",
+      "rows": {
+       "pixels": 0,
+       "mm2": 0,
+       "components": 0
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "no pixel spacing (failure)",
+   "inputs": {
+    "mask": {
+     "kind": "mask2d",
+     "width": 8,
+     "height": 6,
+     "data": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      1,
+      1,
+      0,
+      0,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      0,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      0,
+      1,
+      1,
+      1,
+      0,
+      1,
+      1,
+      0,
+      0,
+      1,
+      1,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      1,
+      1,
+      1,
+      0,
+      0,
+      0,
+      0,
+      0
+     ]
+    }
+   },
+   "parameters": {},
+   "expect_error": {
+    "code": "missing_pixel_spacing"
+   }
+  }
+ ]
+}

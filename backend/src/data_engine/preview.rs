@@ -280,6 +280,8 @@ mod tests {
             edges: vec![GraphEdge {
                 from: "source".into(),
                 to: "blur".into(),
+                from_port: None,
+                to_port: None,
             }],
         }
     }

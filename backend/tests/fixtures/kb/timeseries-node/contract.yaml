@@ -1,0 +1,31 @@
+schema: quantify-kb/1
+category: preprocessing
+purpose: Smooth a uniformly sampled signal with a moving average.
+inputs:
+  - port_id: signal
+    name: Signal
+    artifact_kind: timeseries
+    dtype: float64
+    unit: mV
+    coordinate_space: time
+    calibration: none
+    multiplicity: { min: 1, max: 1 }
+    required: true
+outputs:
+  - port_id: smoothed
+    name: Smoothed signal
+    artifact_kind: timeseries
+    dtype: float64
+    unit: mV
+    coordinate_space: time
+    multiplicity: { min: 1, max: 1 }
+    same_source_as: [signal]
+parameters:
+  - parameter_id: window_samples
+    type: integer
+    meaning: Number of samples averaged.
+    range: { min: 1, max: 1024 }
+    unit: sample
+    required: true
+prerequisites: []
+reproducibility: { deterministic: true, cacheable: true, needs_seed: false, external_state: [] }

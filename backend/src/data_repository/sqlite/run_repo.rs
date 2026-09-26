@@ -28,6 +28,14 @@ pub fn insert_pipeline_snapshot(
             serde_json::to_string(&snapshot.canonical_parameters).unwrap(),
         ],
     )?;
+    // The link to a published AlgoPipe is provenance, not identity: it is added to an
+    // existing identical snapshot too, but never overwritten once set.
+    if let Some(content_id) = &snapshot.source_algopipe_content_id {
+        conn.execute(
+            "UPDATE pipeline_snapshots SET source_algopipe_content_id = ?1 WHERE id = ?2 AND source_algopipe_content_id IS NULL",
+            params![content_id, snapshot.id.to_string()],
+        )?;
+    }
     Ok(())
 }
 
@@ -59,8 +67,9 @@ pub fn insert_run_record(conn: &Connection, run: &RunRecord) -> rusqlite::Result
             id, status, dataset_version_id, dataset_fingerprint, image_asset_id, image_asset_identity,
             run_input_artifact_id, pipeline_snapshot_id, target_node_id, seed, node_versions_json,
             started_at, ended_at, output_content_identities_json, retain_intermediates,
-            metric_set_id, error_summary, failed_stage
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            metric_set_id, error_summary, failed_stage,
+            algopipe_id, algopipe_version, algopipe_content_id, eligibility_event_id
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
         params![
             run.id.to_string(),
             run.status.as_str(),
@@ -80,6 +89,10 @@ pub fn insert_run_record(conn: &Connection, run: &RunRecord) -> rusqlite::Result
             run.metric_set_id.map(|id| id.to_string()),
             run.error_summary,
             run.failed_stage,
+            run.algopipe_id,
+            run.algopipe_version,
+            run.algopipe_content_id,
+            run.eligibility_event_id,
         ],
     )?;
     Ok(())
@@ -192,12 +205,17 @@ fn row_to_run_record(row: &rusqlite::Row) -> rusqlite::Result<RunRecord> {
             .map(|s| Uuid::parse_str(&s).unwrap()),
         error_summary: row.get(16)?,
         failed_stage: row.get(17)?,
+        algopipe_id: row.get(18)?,
+        algopipe_version: row.get(19)?,
+        algopipe_content_id: row.get(20)?,
+        eligibility_event_id: row.get(21)?,
     })
 }
 
 const RUN_RECORD_COLUMNS: &str = "id, status, dataset_version_id, dataset_fingerprint, image_asset_id, image_asset_identity,
      run_input_artifact_id, pipeline_snapshot_id, target_node_id, seed, node_versions_json,
-     started_at, ended_at, output_content_identities_json, retain_intermediates, metric_set_id, error_summary, failed_stage";
+     started_at, ended_at, output_content_identities_json, retain_intermediates, metric_set_id, error_summary, failed_stage,
+     algopipe_id, algopipe_version, algopipe_content_id, eligibility_event_id";
 
 pub fn get_run_record(conn: &Connection, run_id: Uuid) -> rusqlite::Result<Option<RunRecord>> {
     conn.query_row(
@@ -325,6 +343,8 @@ mod tests {
             split: Some(Split::Train),
             reference_mask_id: None,
             metadata_status: MetadataStatus::Complete,
+            pixel_spacing_mm: None,
+            spacing_source: None,
         };
         dataset_repo::insert_image_asset(&conn, &asset).unwrap();
         let version = DatasetVersion {
@@ -395,6 +415,10 @@ mod tests {
             metric_set_id: None,
             error_summary: None,
             failed_stage: None,
+            algopipe_id: None,
+            algopipe_version: None,
+            algopipe_content_id: None,
+            eligibility_event_id: None,
         };
         insert_run_record(&conn, &run).unwrap();
 
@@ -466,6 +490,10 @@ mod tests {
                 metric_set_id: None,
                 error_summary: None,
                 failed_stage: None,
+                algopipe_id: None,
+                algopipe_version: None,
+                algopipe_content_id: None,
+                eligibility_event_id: None,
             },
         )
         .unwrap();

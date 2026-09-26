@@ -38,17 +38,84 @@ pub enum EventPayload {
         image_asset_id: Uuid,
         pipeline_snapshot_id: Uuid,
         target_node_id: String,
+        // Feature 002 additions (absent on legacy snapshot previews). A consumer
+        // MUST discard the event if `(image, revision, target, port)` is no
+        // longer current (FR-019).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pipe_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        revision: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        verification_state: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        unverified_nodes: Option<Vec<String>>,
     },
     PreviewFailed {
         request_context_id: Uuid,
         image_asset_id: Uuid,
         pipeline_snapshot_id: Uuid,
         target_node_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pipe_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        revision: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        verification_state: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        unverified_nodes: Option<Vec<String>>,
     },
     ThumbnailReady {
         image_asset_id: Uuid,
         source_content_identity: String,
     },
+    // ---- feature 002 (contracts/events.md) — notification only; no event
+    // carries paper text, quotes, file contents or patient details. ----
+    KbScanProgress {
+        scan_id: Uuid,
+        scanned: u64,
+        total: Option<u64>,
+        invalid: u64,
+    },
+    KbScanComplete {
+        scan_id: Uuid,
+        indexed: u64,
+        invalid: u64,
+    },
+    KbBundleChangedExternally {
+        kind: String,
+        id: String,
+        revision: String,
+    },
+    ExtractionProgress {
+        extraction_id: Uuid,
+        paper_id: Uuid,
+        page: u32,
+        page_count: u32,
+    },
+    ExtractionComplete {
+        extraction_id: Uuid,
+        candidate_count: u32,
+        pages_without_text: Vec<u32>,
+    },
+    ExtractionCancelled {
+        extraction_id: Uuid,
+    },
+    PreviewStale {
+        pipe_id: String,
+        revision: String,
+        nodes: Vec<String>,
+    },
+    EligibilityChanged {
+        algopipe: AlgopipeRef,
+        eligible: bool,
+        reasons: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AlgopipeRef {
+    pub id: String,
+    pub version: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -133,4 +200,42 @@ async fn send_event(socket: &mut WebSocket, event: &Event) -> Result<(), axum::E
 
 pub fn new_channel() -> (broadcast::Sender<Event>, broadcast::Receiver<Event>) {
     broadcast::channel(EVENT_CHANNEL_CAPACITY)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn json_of(payload: EventPayload) -> serde_json::Value {
+        serde_json::to_value(Event::new(Uuid::nil(), payload)).unwrap()
+    }
+
+    #[test]
+    fn kb_events_use_the_documented_names_and_payloads() {
+        let v = json_of(EventPayload::KbScanProgress {
+            scan_id: Uuid::nil(),
+            scanned: 3,
+            total: None,
+            invalid: 1,
+        });
+        assert_eq!(v["type"], "kb_scan_progress");
+        assert_eq!(v["payload"]["scanned"], 3);
+
+        let v = json_of(EventPayload::EligibilityChanged {
+            algopipe: AlgopipeRef { id: "a.b".into(), version: "1.0.0".into() },
+            eligible: false,
+            reasons: vec!["verification_withdrawn".into()],
+        });
+        assert_eq!(v["type"], "eligibility_changed");
+        assert_eq!(v["payload"]["algopipe"]["id"], "a.b");
+
+        for (payload, name) in [
+            (EventPayload::KbScanComplete { scan_id: Uuid::nil(), indexed: 1, invalid: 0 }, "kb_scan_complete"),
+            (EventPayload::KbBundleChangedExternally { kind: "algonode".into(), id: "a.b".into(), revision: "r".into() }, "kb_bundle_changed_externally"),
+            (EventPayload::ExtractionCancelled { extraction_id: Uuid::nil() }, "extraction_cancelled"),
+            (EventPayload::PreviewStale { pipe_id: "a.b".into(), revision: "r".into(), nodes: vec![] }, "preview_stale"),
+        ] {
+            assert_eq!(json_of(payload)["type"], name);
+        }
+    }
 }

@@ -28,6 +28,13 @@ tower-http = { version = "0.5", features = ["cors"] }
 futures-util = "0.3"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 base64 = "0.22"
+# YAML: serde_yaml is archived/unmaintained; serde_yaml_ng is the maintained drop-in fork (T001 decision)
+serde_yaml_ng = "0.10"
+semver = { version = "1", features = ["serde"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+regex = "1"
+lopdf = "0.34"
+pdf-extract = "0.7"
 
 [dev-dependencies]
 tempfile = "3"

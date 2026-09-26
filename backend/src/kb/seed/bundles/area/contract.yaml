@@ -1,0 +1,26 @@
+schema: quantify-kb/1
+category: analysis
+purpose: Report pixel count, physical area and connected-component count of a mask.
+inputs:
+  - port_id: mask
+    name: Mask
+    artifact_kind: mask2d
+    dtype: uint8
+    value_domain: [0, 1]
+    unit: none
+    coordinate_space: image-pixel
+    calibration: none
+    multiplicity: { min: 1, max: 1 }
+    required: true
+outputs:
+  - port_id: measurements
+    name: Measurements
+    artifact_kind: table
+    unit: mm2
+    coordinate_space: image-pixel
+    multiplicity: { min: 1, max: 1 }
+    same_source_as: [mask]
+parameters: []
+prerequisites:
+  - { predicate: pixel_spacing_present, equals: true }
+reproducibility: { deterministic: true, cacheable: true, needs_seed: false, external_state: [] }

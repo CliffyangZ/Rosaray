@@ -86,6 +86,17 @@ pub struct RunRecord {
     /// content or non-essential subject info (FR-021).
     pub error_summary: Option<String>,
     pub failed_stage: Option<String>,
+    /// Feature 002: the published AlgoPipe version this Run was admitted for
+    /// (SC-005). Absent on legacy snapshot Runs.
+    #[serde(default)]
+    pub algopipe_id: Option<String>,
+    #[serde(default)]
+    pub algopipe_version: Option<String>,
+    #[serde(default)]
+    pub algopipe_content_id: Option<String>,
+    /// The `run_admission_allowed` audit event that let it start.
+    #[serde(default)]
+    pub eligibility_event_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

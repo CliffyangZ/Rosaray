@@ -290,6 +290,8 @@ fn try_confirm(
             split: candidate.resolved_split,
             reference_mask_id,
             metadata_status,
+            pixel_spacing_mm: None,
+            spacing_source: None,
         };
         dataset_repo::insert_image_asset(&tx, &asset)
             .map_err(|_| ServiceError::ServiceUnavailable)?;

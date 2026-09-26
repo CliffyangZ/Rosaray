@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::domain::dataset::{
     Dataset, DatasetVersion, Dimensions, ImageAsset, ImageAssetStatus, MaskValidity,
-    MetadataStatus, ReferenceMask, Split, ValidationFinding, ValidationStatus, ValidationSummary,
+    MetadataStatus, PixelSpacing, ReferenceMask, SpacingSource, Split, ValidationFinding, ValidationStatus, ValidationSummary,
 };
 
 pub fn get_or_create_dataset(
@@ -178,8 +178,9 @@ pub fn insert_image_asset(conn: &Connection, asset: &ImageAsset) -> rusqlite::Re
         "INSERT INTO image_assets (
             id, external_source_uri, source_content_identity, imported_content_identity,
             width, height, source_created_at, imported_at, status, patient_id, split,
-            reference_mask_id, metadata_status
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            reference_mask_id, metadata_status,
+            pixel_spacing_mm_x, pixel_spacing_mm_y, spacing_source
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
         params![
             asset.id.to_string(),
             asset.external_source_uri,
@@ -194,6 +195,9 @@ pub fn insert_image_asset(conn: &Connection, asset: &ImageAsset) -> rusqlite::Re
             asset.split.map(|s| s.as_str().to_string()),
             asset.reference_mask_id.map(|u| u.to_string()),
             metadata_status_str(asset.metadata_status),
+            asset.pixel_spacing_mm.map(|p| p.x),
+            asset.pixel_spacing_mm.map(|p| p.y),
+            asset.spacing_source.map(|s| s.as_str()),
         ],
     )?;
     Ok(())
@@ -218,7 +222,8 @@ pub fn image_asset_by_id(conn: &Connection, id: Uuid) -> rusqlite::Result<Option
     conn.query_row(
         "SELECT external_source_uri, source_content_identity, imported_content_identity,
                 width, height, source_created_at, imported_at, status, patient_id, split,
-                reference_mask_id, metadata_status
+                reference_mask_id, metadata_status,
+                pixel_spacing_mm_x, pixel_spacing_mm_y, spacing_source
          FROM image_assets WHERE id = ?1",
         params![id.to_string()],
         |row| {
@@ -242,6 +247,13 @@ pub fn image_asset_by_id(conn: &Connection, id: Uuid) -> rusqlite::Result<Option
                     .get::<_, Option<String>>(10)?
                     .map(|s| Uuid::parse_str(&s).unwrap()),
                 metadata_status: parse_metadata_status(&row.get::<_, String>(11)?),
+                pixel_spacing_mm: match (row.get::<_, Option<f64>>(12)?, row.get::<_, Option<f64>>(13)?) {
+                    (Some(x), Some(y)) => Some(PixelSpacing { x, y }),
+                    _ => None,
+                },
+                spacing_source: row
+                    .get::<_, Option<String>>(14)?
+                    .and_then(|s| SpacingSource::parse(&s)),
             })
         },
     )

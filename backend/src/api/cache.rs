@@ -38,6 +38,7 @@ pub async fn post_cache_clear(
     State(state): State<AppState>,
 ) -> Result<Json<ClearCacheResponse>, ServiceError> {
     let entries = state.preview_cache.drain();
+    state.preview_nodes.clear();
     let (thumb_images, thumb_blobs) = {
         let db = state.db.lock().unwrap();
         housekeeping_repo::clear_thumbnails(&db).map_err(|_| ServiceError::ServiceUnavailable)?

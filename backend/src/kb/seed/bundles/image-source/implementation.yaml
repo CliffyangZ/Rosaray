@@ -1,0 +1,4 @@
+implementation_id: builtin.image-source
+implementation_version: "1"
+trust: builtin
+assets: []

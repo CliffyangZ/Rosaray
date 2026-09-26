@@ -1,10 +1,11 @@
 import './styles.css';
 import rosarayIcon from './clarosa-ai-icon.png';
-import {$,$$,ic,toast,hash} from './util.js';
+import {$,$$,esc,toast,hash} from './util.js';
 import {dice} from './algo.js';
 import {DEFS,dflt,exec} from './registry.js';
 import {samples,getImg} from './samples.js';
 import * as svc from './service_client.js';
+import * as kbCatalog from './kb_catalog.js';
 
 // ---- state ----
 let nodes=[],edges=[],selId=null,pending=null,uid=1;
@@ -17,6 +18,8 @@ const svcThumbRequests=new Map(); // image_id -> in-flight request_id, for scrol
 const svcThumbCache=new Map(); // image_id -> data URL, so re-rendering the list doesn't re-fetch
 // ---- local service official Runs (User Story 4) ----
 let svcRuns=[]; // GET /runs?dataset_version_id= results for the selected Dataset Version — durable, traceable, distinct from the local in-browser `runs` prototype above (Constitution Principle III)
+let workspace='data',selectedDatasetImageId=null,importPreview=null,scanPathDraft='',datasetNameDraft='Rosaray Dataset';
+let executablePipes=[],selectedPipeKey='',selectedRunId=null,selectedRun=null,officialOutput=null,selectedProvenance=null;
 function resetGraph(){
   nodes=[];edges=[];uid=1;
   const seq=[['source',12,10],['normalize',176,84],['gaussian',12,158],['threshold',176,232],['morphology',12,306],['area',176,380]];
@@ -53,37 +56,54 @@ function decodeBlobToBinaryMask(blob,w,h){
 async function svcListDatasets(){
   try{
     const r=await svc.request('GET','/datasets');svcDatasets=r.datasets;
-    if(!svcDatasetId&&svcDatasets.length)svcDatasetId=svcDatasets[0].id;
-    if(svcDatasetId)await svcListVersions();
+    if(!svcDatasets.some(d=>d.id===svcDatasetId))svcDatasetId=svcDatasets[0]?.id||null;
+    if(svcDatasetId){await svcListVersions();await svcRefreshRuns()}
+    else{svcVersions=[];svcVersionId=null;svcImages=[]}
   }catch(e){toast('Could not load datasets: '+e.message,true)}
-  renderLeft();
+  renderDataPage();renderResultPanel();
 }
-async function svcSelectDataset(id){svcDatasetId=id;svcVersionId=null;svcImages=[];await svcListVersions()}
+async function svcSelectDataset(id){svcDatasetId=id;svcVersionId=null;svcImages=[];selectedRunId=null;selectedRun=null;officialOutput=null;await svcListVersions();await svcRefreshRuns();paint()}
 async function svcListVersions(){
   if(!svcDatasetId)return;
   try{const r=await svc.request('GET',`/datasets/${svcDatasetId}/versions`);svcVersions=r.versions;
-    if(!svcVersionId&&svcVersions.length)svcVersionId=svcVersions[svcVersions.length-1].id;
-    await svcListImages();}
+    if(!svcVersions.some(v=>v.id===svcVersionId))svcVersionId=svcVersions.at(-1)?.id||null;
+    if(svcVersionId)await svcListImages();else{svcImages=[];selectedDatasetImageId=null}}
   catch(e){toast('Could not load dataset versions: '+e.message,true)}
-  renderLeft();
+  renderDataPage();renderResultPanel();
 }
 async function svcListImages(){
   if(!svcVersionId)return;
-  try{const r=await svc.request('GET',`/dataset-versions/${svcVersionId}/images`);svcImages=r.images}
+  try{const r=await svc.request('GET',`/dataset-versions/${svcVersionId}/images`);svcImages=r.images;
+    if(!svcImages.some(im=>im.id===selectedDatasetImageId))selectedDatasetImageId=svcImages[0]?.id||null}
   catch(e){toast('Could not load images: '+e.message,true);svcImages=[]}
 }
-async function svcSelectVersion(id){svcVersionId=id;await svcListImages();svcRuns=[];if(btab==='runs')await svcRefreshRuns();renderLeft()}
+async function svcSelectVersion(id){svcVersionId=id;await svcListImages();svcRuns=[];selectedRunId=null;selectedRun=null;officialOutput=null;await svcRefreshRuns();renderDataPage();renderResultPanel();renderBottom();paint()}
 
-async function svcScanFolder(path){
+async function svcScanFolder(path,manifestFile){
   try{
-    const r=await svc.request('POST','/import-batches',{source_selection:'folder_scan',paths:[path],metadata_manifest:null,dataset_display_name:'Rosaray Dataset'});
-    const importable=r.candidates.filter(c=>c.classification==='importable').map(c=>c.source_ref);
-    if(!importable.length){toast('No importable images found in that folder',true);return}
-    const c=await svc.request('POST',`/import-batches/${r.batch_id}/confirm`,{confirmed_source_refs:importable});
-    svcDatasetId=c.dataset_id;svcVersionId=c.dataset_version_id;
-    toast(`Imported ${importable.length} image(s) into a new Dataset Version`);
-    await svcListVersions();
+    const metadata_manifest=manifestFile?JSON.parse(await manifestFile.text()):null;
+    const dataset_display_name=$('#dataset-name')?.value.trim()||'Rosaray Dataset';
+    importPreview=await svc.request('POST','/import-batches',{source_selection:'folder_scan',paths:[path],metadata_manifest,dataset_display_name});
+    renderDataPage();
+  }catch(e){toast('Scan failed: '+e.message,true)}
+}
+async function svcConfirmImport(){
+  if(!importPreview)return;
+  const batch=importPreview;
+  const confirmed_source_refs=$$('[data-import-ref]:checked',$('#dataset-page')).map(x=>x.dataset.importRef);
+  if(!confirmed_source_refs.length){toast('選擇至少一張可匯入影像。',true);return}
+  try{
+    const c=await svc.request('POST',`/import-batches/${batch.batch_id}/confirm`,{confirmed_source_refs});
+    importPreview=null;svcDatasetId=c.dataset_id;svcVersionId=c.dataset_version_id;
+    await svcListDatasets();
+    toast(`已建立 Dataset Version，納入 ${confirmed_source_refs.length} 張影像。`);
   }catch(e){toast('Import failed: '+e.message,true)}
+}
+async function svcCancelImport(){
+  if(!importPreview)return;
+  const id=importPreview.batch_id;
+  try{await svc.request('POST',`/import-batches/${id}/cancel`)}catch(e){toast('Could not cancel scan: '+e.message,true);return}
+  importPreview=null;renderDataPage();
 }
 
 async function svcOpenImage(imageId){
@@ -104,11 +124,12 @@ async function svcOpenImage(imageId){
     }
     const sid='svc-'+imageId;
     const existing=samples.findIndex(s=>s.id===sid);
-    const s={id:sid,name:`image-${imageId.slice(0,8)}.png`,patient:desc.display_metadata.patient_id||'—',
-      split:desc.display_metadata.split||'train',spacing:.05,serviceImageId:imageId,
+    const listed=svcImages.find(im=>im.id===imageId);
+    const s={id:sid,name:listed?.display_name||`image-${imageId.slice(0,8)}`,patient:desc.display_metadata.patient_id||'—',
+      split:desc.display_metadata.split||'—',spacing:null,serviceImageId:imageId,
       overlayDisabledReason:desc.reference_mask_unavailable_reason||null,data:{w,h,d,gt}};
     if(existing>=0)samples[existing]=s;else samples.push(s);
-    openSample(sid);
+    selectedDatasetImageId=imageId;openSample(sid);renderDataPage();
   }catch(e){if(reqId===svcOpenReqId)toast('Could not open image: '+e.message,true)}
 }
 
@@ -124,14 +145,16 @@ function svcObserveThumbnails(container){
   $$('[data-thumb-for]',container).forEach(el=>svcThumbObserver.observe(el));
 }
 async function svcLoadThumbnail(imageId,el){
-  if(svcThumbCache.has(imageId)){el.style.backgroundImage=svcThumbCache.get(imageId);el.style.backgroundSize='cover';return}
+  if(!el?.isConnected)return;
+  const show=url=>$$('[data-thumb-for]').filter(x=>x.dataset.thumbFor===imageId).forEach(x=>{x.style.backgroundImage=url;x.classList.add('loaded')});
+  if(svcThumbCache.has(imageId)){show(svcThumbCache.get(imageId));return}
   if(svcThumbRequests.has(imageId))return; // already in flight
   try{
     const r=await svc.request('GET',`/image-assets/${imageId}/thumbnail`);
-    if(r.state==='ready'){const url=`url(data:image/png;base64,${r.data_base64})`;svcThumbCache.set(imageId,url);el.style.backgroundImage=url;el.style.backgroundSize='cover';return}
+    if(r.state==='ready'){const url=`url(data:image/png;base64,${r.data_base64})`;svcThumbCache.set(imageId,url);show(url);return}
     if(r.state==='generating'&&r.request_id&&r.request_id!=='00000000-0000-0000-0000-000000000000'){
       svcThumbRequests.set(imageId,r.request_id);
-      setTimeout(()=>{svcThumbRequests.delete(imageId);svcLoadThumbnail(imageId,el)},400);
+      setTimeout(()=>{svcThumbRequests.delete(imageId);if(el.isConnected)svcLoadThumbnail(imageId,el)},400);
     }
   }catch{/* thumbnail is best-effort; a failure just leaves the placeholder */}
 }
@@ -214,9 +237,54 @@ function svcPickBundle(){
   input.click();
 }
 async function svcRefreshRuns(){
-  if(!svc.isConnected()||svc.currentSessionState()!=='ready'||!svcVersionId){svcRuns=[];return}
-  try{const r=await svc.request('GET',`/runs?dataset_version_id=${svcVersionId}`);svcRuns=r.runs}
+  if(!svc.isConnected()||svc.currentSessionState()!=='ready'||!svcVersionId){svcRuns=[];selectedRun=null;officialOutput=null;return}
+  try{const r=await svc.request('GET',`/runs?dataset_version_id=${svcVersionId}`);svcRuns=r.runs;
+    if(!svcRuns.some(run=>run.id===selectedRunId))selectedRunId=svcRuns.at(-1)?.id||null;
+    if(selectedRunId)await selectRun(selectedRunId);else{selectedRun=null;officialOutput=null;renderResultPanel();paint()}}
   catch{svcRuns=[]}
+}
+async function loadExecutablePipes(){
+  if(!svc.isConnected()||svc.currentSessionState()!=='ready'){executablePipes=[];renderResultPanel();return}
+  try{
+    const entries=[];
+    let after;
+    do{
+      const r=await svc.kb.listEntries({kind:'algopipe',release:'executable',limit:200,after});
+      entries.push(...r.entries);
+      after=r.next;
+    }while(after);
+    executablePipes=entries.filter(p=>p.status==='published'&&p.release_kind==='executable'&&p.availability!=='unavailable');
+    if(!executablePipes.some(p=>`${p.id}@${p.version}`===selectedPipeKey))selectedPipeKey=executablePipes[0]?`${executablePipes[0].id}@${executablePipes[0].version}`:'';
+  }catch(e){executablePipes=[];toast('Could not load published AlgoPipes: '+e.message,true)}
+  renderResultPanel();
+}
+async function selectRun(id){
+  selectedRunId=id;
+  try{
+    const run=await svc.request('GET',`/runs/${id}`);
+    if(selectedRunId!==id)return;
+    selectedRun=run;
+    selectedProvenance=null;officialOutput=null;
+    const ref=selectedRun.output_artifact_refs?.find(a=>a.kind==='image'||a.kind==='mask');
+    if(ref){try{const blob=await svc.request('GET',`/artifacts/${ref.id}/content`);const im=await decodeBlobToLuma(blob);
+      if(selectedRunId===id)officialOutput={runId:id,sampleId:'svc-'+run.record.image_asset_id,visual:{w:im.w,h:im.h,d:im.d,kind:ref.kind}}}
+      catch{toast('Run 已載入，但輸出影像目前無法顯示。',true)}}
+  }
+  catch(e){selectedRun=null;toast('Could not load Run: '+e.message,true)}
+  updateModeButtons();paint();renderResultPanel();renderBottom();
+}
+async function svcRunPublished(){
+  const s=activeSample(),pipe=executablePipes.find(p=>`${p.id}@${p.version}`===selectedPipeKey);
+  if(!svc.isConnected()||svc.currentSessionState()!=='ready'){toast('Local Service 尚未就緒。',true);return}
+  if(!s?.serviceImageId||!svcVersionId||!svcImages.some(im=>im.id===s.serviceImageId)){toast('請先從目前的 Dataset Version 選擇影像。',true);setWorkspace('data');return}
+  if(!pipe){toast('請先選擇已發布的可執行 AlgoPipe。',true);setWorkspace('design');return}
+  try{
+    const r=await svc.request('POST','/runs',{dataset_version_id:svcVersionId,image_asset_id:s.serviceImageId,algopipe:{id:pipe.id,version:pipe.version},seed:1});
+    selectedRunId=r.run_id;toast(`正式 Run 已開始：${r.run_id.slice(0,8)}…`);await svcRefreshRuns();setB('runs');
+  }catch(e){
+    const reason=e.details?.reasons?.[0];
+    toast('Run 未獲准：'+(reason?.message||reason?.code||e.message),true);
+  }
 }
 
 let lastSvcState=null;
@@ -226,16 +294,19 @@ svc.subscribeEvents(
     if(ev.type==='run_completed'||ev.type==='run_failed'){
       if(ev.type==='run_failed')toast('Official Run failed: '+(ev.payload.error_summary||'unknown error'),true);
       else toast('Official Run completed');
-      svcRefreshRuns().then(()=>{if(btab==='runs')renderBottom()});
+      svcRefreshRuns().then(()=>{renderBottom();renderResultPanel()});
     }
   },
   state=>{const wasDown=lastSvcState&&lastSvcState!=='ready';lastSvcState=state;
-    if(leftView==='data')renderLeft();
+    $('#service-status').textContent=svc.isConnected()?`Local Service · ${SVC_STATE_LABEL[state]||state}`:'Local Service · 未連線';
+    renderDataPage();renderResultPanel();
+    if(workspace==='design')kbCatalog.load();
     paint(); // refresh the stale-content banner if the open image came from the service
     if(state==='ready'){
       // Reconnection procedure (event-bus.md): never trust stale data — re-fetch on the transition back to ready.
       if(!svcDatasetId)svcListDatasets();
       else if(wasDown)svcListVersions();
+      if(wasDown||!executablePipes.length)loadExecutablePipes();
       if(wasDown&&btab==='runs')svcRefreshRuns().then(renderBottom);
     }
   }
@@ -244,11 +315,10 @@ svc.subscribeEvents(
 
 // ---- menu bar ----
 const MENUS={
-  File:[['Import Image…','⌘O',()=>$('#file').click()],['Import Model (.onnx)…','',()=>toast('Model import goes through the local API: POST /api/projects/:id/assets')],'-',['Save Project','⌘S',()=>toast('Project saved to local SQLite (prototype)')],['Export Bundle…','',()=>svcExportBundle()],['Import Bundle…','',()=>svcPickBundle()]],
-  Edit:[['Delete Selected Node','⌫',()=>delSel()],['Clear Pipeline','',()=>{nodes=[];edges=[];selId=null;renderGraph();toast('Pipeline cleared')}],['Reset Pipeline','',()=>{resetGraph();renderGraph();toast('Pipeline reset to default')}]],
-  View:[['Toggle Side Bar','⌘B',()=>toggle('left')],['Toggle Pipeline Panel','⌥⌘B',()=>toggle('right')],['Toggle Bottom Panel','⌘J',()=>toggleBottom()],'-',['Fit Image to Window','',()=>fit()],['Actual Pixels (1:1)','',()=>zoomTo(1)],'-',['Theme: Light','',()=>setTheme('light')],['Theme: Dark','',()=>setTheme('dark')]],
-  Pipeline:[['Run Pipeline','⌘↵',()=>run()],['Run via Service (official)…','',()=>svcRunOfficial()],['Validate Pipeline','',()=>{const e=validateGraph();toast(e||'Pipeline is valid: types match, no cycles',!!e)}]],
-  Help:[['About Rosaray','',()=>toast('Rosaray — research prototype, not for diagnosis.')]]
+  File:[['掃描影像資料夾…','',()=>{setWorkspace('data');$('#import-focus')?.click()}],['匯出研究 Bundle…','',()=>svcExportBundle()],['匯入研究 Bundle…','',()=>svcPickBundle()]],
+  View:[['Dataset','',()=>setWorkspace('data')],['演算法目錄','',()=>setWorkspace('design')],['Analysis','',()=>setWorkspace('result')],'-',['Fit Image to Window','',()=>fit()],['Actual Pixels (1:1)','',()=>zoomTo(1)],'-',['Theme: Light','',()=>setTheme('light')],['Theme: Dark','',()=>setTheme('dark')]],
+  Pipeline:[['查看演算法目錄','',()=>setWorkspace('design')],['執行已發布 AlgoPipe','⌘↵',()=>svcRunPublished()],['查看 Run History','',()=>{setWorkspace('result');setB('runs')}]],
+  Help:[['About Rosaray','',()=>toast('Rosaray — research use only, not for diagnosis or treatment.')]]
 };
 function buildMenus(){
   const mb=$('#menubar');
@@ -266,14 +336,21 @@ function setTheme(t){document.documentElement.dataset.theme=t}
 
 
 // ---- panels ----
-let leftView='files';
+let leftView='kb';
 function buildActivity(){
   const a=$('#activity');
-  a.innerHTML=[['files','Explorer'],['data','Dataset'],['book','Evidence']].map(([k,t])=>`<button class="ab" data-v="${k}" title="${t}">${ic(k)}</button>`).join('')+'<span class="grow"></span><button class="ab" id="setb" title="Toggle theme">'+ic('gear')+'</button>';
+  a.innerHTML=[['data','Dataset'],['design','演算法目錄'],['result','Analysis']].map(([k,t],i)=>`<button class="ab" data-space="${k}" title="${t}" aria-label="${t}"><span class="nav-index">0${i+1}</span><small>${['DATA','ALGO','RESULT'][i]}</small></button>`).join('')+'<span class="grow"></span><span class="nav-local">●<small>LOCAL</small></span>';
   a.onclick=e=>{const b=e.target.closest('.ab');if(!b)return;
-    if(b.id==='setb'){const dark=getComputedStyle(document.body).backgroundColor==='rgb(13, 18, 20)';setTheme(dark?'light':'dark');return}
-    if(b.dataset.v===leftView&&!$('#left').classList.contains('hidden')){toggle('left');return}
-    leftView=b.dataset.v;$('#left').classList.remove('hidden');renderLeft()};
+    setWorkspace(b.dataset.space)};
+}
+function setWorkspace(next){
+  workspace=next;$('#work').dataset.space=next;
+  $$('.ab[data-space]').forEach(b=>{b.classList.toggle('on',b.dataset.space===next);b.setAttribute('aria-current',b.dataset.space===next?'page':'false')});
+  if(next==='data')renderDataPage();
+  if(next==='design'){
+    kbCatalog.mount($('#left'),$('#kb-detail'));
+  }
+  if(next==='result'){renderResultPanel();renderBottom();requestAnimationFrame(fit)}
 }
 function toggle(w){$('#'+w).classList.toggle('hidden');requestAnimationFrame(()=>{renderLeft();if(w!=='right')fit()})}
 function toggleBottom(){$('#bottom').classList.toggle('hidden')}
@@ -299,6 +376,8 @@ function renderLeft(){
     $('#imp').onclick=()=>$('#file').click();
   }else if(leftView==='data'){
     renderDatasetExplorer(L);
+  }else if(leftView==='kb'){
+    kbCatalog.mount(L,$('#kb-detail'));
   }else{
     L.innerHTML=`<div class="sh"><span>Evidence</span></div><input class="search" id="q" placeholder="Search PubMed / Hugging Face…" aria-label="Search evidence">
       <div class="note">Evidence attaches to a pipeline node, not to the project. Select a node, search, then attach a result.<br><br>Search runs through the local API (<span class="mono">/api/search/pubmed</span>); only the query text leaves this machine. Not connected in this prototype.</div>`;
@@ -351,6 +430,97 @@ function renderSvcImageList(){
     </details>`;
 }
 
+function renderDataPage(){
+  const body=$('#dataset-content'),detail=$('#dataset-detail');
+  if(!body||!detail)return;
+  const online=svc.isConnected()&&svc.currentSessionState()==='ready';
+  const selected=svcImages.find(im=>im.id===selectedDatasetImageId);
+  const version=svcVersions.find(v=>v.id===svcVersionId);
+  const complete=svcImages.filter(im=>im.patient_id&&im.split&&im.source_status==='available').length;
+  const people=new Set(svcImages.map(im=>im.patient_id).filter(Boolean)).size;
+  const imageRows=svcImages.map(im=>`<button class="data-row ${im.id===selectedDatasetImageId?'selected':''}" data-image-id="${esc(im.id)}">
+    <span class="data-file"><span class="data-thumb" data-thumb-for="${esc(im.id)}"></span><span>${esc(im.display_name)}</span></span>
+    <span class="mono">${esc(im.split||'未指定')}</span>
+    <span class="mono">${esc(im.dimensions.width)} × ${esc(im.dimensions.height)}</span>
+    <span class="status-chip ${im.source_status==='available'?'ok':'errc'}">${esc(im.source_status)}</span>
+  </button>`).join('');
+  let scan='';
+  if(importPreview){
+    const candidates=importPreview.candidates;
+    const accepted=candidates.filter(c=>c.classification==='importable').length;
+    scan=`<section class="data-card import-review"><div class="section-heading"><div><div class="eyebrow">IMPORT PREVIEW</div><h2>確認後才建立 Dataset Version</h2></div><span class="status-chip">${accepted} 可匯入 / ${candidates.length} 掃描項目</span></div>
+      <div class="import-candidates">${candidates.map(c=>`<label class="import-candidate ${c.classification!=='importable'?'blocked':''}">
+        <input type="checkbox" data-import-ref="${esc(c.source_ref)}" ${c.classification==='importable'?'checked':'disabled'}>
+        <span class="mono">${esc(c.source_ref)}</span><span class="status-chip ${c.classification==='importable'?'ok':'warnc'}">${esc(c.classification)}</span>
+        <small>${esc(c.resolved_patient_id||'patient 未指定')} · ${esc(c.resolved_split||'split 未指定')}${c.reason?' · '+esc(c.reason):''}</small>
+      </label>`).join('')}</div>
+      <div class="data-actions"><button class="btn" id="confirm-import" ${accepted?'':'disabled'}>確認匯入</button><button class="btn ghost" id="cancel-import">取消</button></div></section>`;
+  }
+  if(!online){
+    $('#import-focus').disabled=true;
+    const st=svc.currentSessionState();
+    body.innerHTML=`<div class="data-intro"><div class="eyebrow">LOCAL DATASET</div><h1>研究資料集</h1><p>透過本機 Rosaray Service 管理影像與不可變的 Dataset Version。</p></div><div class="data-card offline"><h2>${svc.isConnected()?esc(SVC_STATE_LABEL[st]||st):'尚未連接 Local Service'}</h2><p>請從專案根目錄執行 <code>./scripts/launch.sh</code>。連線恢復後會重新查詢資料。</p>${svc.isConnected()?'<button class="btn ghost" id="data-retry">重新連線</button>':''}</div>`;
+    detail.innerHTML='<div class="panel-title">DATASET DETAILS</div><div class="detail-empty">本機服務就緒後顯示影像資訊。</div>';
+    $('#data-retry')?.addEventListener('click',()=>svc.retryConnect());
+    return;
+  }
+  $('#import-focus').disabled=false;
+  body.innerHTML=`<div class="data-intro"><div class="eyebrow">DATASET OVERVIEW</div><h1>研究資料集</h1><p>後端儲存的 Dataset Version 與影像來源。</p></div>
+    <div class="data-stats"><div><small>影像</small><strong>${svcImages.length.toString().padStart(2,'0')}</strong><span>${complete} 張 metadata 完整</span></div><div><small>受試者 ID</small><strong>${people.toString().padStart(2,'0')}</strong><span>僅計入已填寫欄位</span></div><div><small>版本</small><strong>${svcVersions.length.toString().padStart(2,'0')}</strong><span>Dataset Versions</span></div></div>
+    <div class="data-picker"><label>Dataset<select id="data-dataset" ${svcDatasets.length?'':'disabled'}>${svcDatasets.length?svcDatasets.map(d=>`<option value="${esc(d.id)}" ${d.id===svcDatasetId?'selected':''}>${esc(d.display_name)}</option>`).join(''):'<option>尚無 Dataset</option>'}</select></label><label>Version<select id="data-version" ${svcVersions.length?'':'disabled'}>${svcVersions.length?svcVersions.slice().reverse().map(v=>`<option value="${esc(v.id)}" ${v.id===svcVersionId?'selected':''}>${esc(new Date(v.created_at).toLocaleString())} · ${v.image_count} images · ${esc(v.validation_summary.status)}</option>`).join(''):'<option>尚無 Version</option>'}</select></label></div>
+    <section class="data-card data-table"><div class="section-heading"><div><div class="eyebrow">FILES / SELECTED VERSION</div><h2>影像清單</h2></div><span class="mono dim">${version?esc(version.fingerprint.slice(0,16)):'尚無版本'}</span></div>
+      <div class="data-table-head"><span>名稱</span><span>Split</span><span>尺寸</span><span>來源</span></div>
+      <div class="data-rows">${imageRows||'<div class="data-empty">尚無影像。請掃描本機資料夾，檢查候選項目後確認匯入。</div>'}</div></section>
+    <details class="data-card import-entry" id="import-entry" ${importPreview?'open':''}><summary class="section-heading"><div><div class="eyebrow">LOCAL IMPORT</div><h2>掃描 PNG / JPEG 資料夾</h2></div><span class="mono dim">＋</span></summary>
+      <p>後端從本機絕對路徑讀取來源檔案；原始影像保持外部連結。可選填 metadata manifest JSON，不會從檔名猜測 patient 或 split。</p>
+      <div class="import-fields"><label>資料夾絕對路徑<input id="scanpath" value="${esc(scanPathDraft)}" placeholder="/path/to/images"></label><label>Dataset 名稱<input id="dataset-name" value="${esc(datasetNameDraft)}"></label><label>Metadata manifest（可選）<input id="manifest-file" type="file" accept=".json,application/json"></label></div>
+      <button class="btn" id="scanbtn">掃描並預覽</button></details>${scan}
+    <div class="data-privacy"><strong>本機資料</strong><span>僅顯示去識別化資訊。研究資料由 Local Service 加密保存。</span></div>`;
+  $('#data-dataset')?.addEventListener('change',e=>svcSelectDataset(e.target.value));
+  $('#data-version')?.addEventListener('change',e=>svcSelectVersion(e.target.value));
+  $$('.data-row',body).forEach(row=>row.onclick=()=>{selectedDatasetImageId=row.dataset.imageId;renderDataPage()});
+  $('#scanpath').oninput=e=>scanPathDraft=e.target.value;
+  $('#dataset-name').oninput=e=>datasetNameDraft=e.target.value;
+  $('#scanbtn').onclick=()=>{const path=$('#scanpath').value.trim();if(!path){toast('請輸入本機資料夾的絕對路徑。',true);return}scanPathDraft=path;svcScanFolder(path,$('#manifest-file').files[0])};
+  $('#import-focus').onclick=()=>{const entry=$('#import-entry');entry.open=true;entry.scrollIntoView({block:'center',behavior:'smooth'});$('#scanpath').focus()};
+  $('#confirm-import')?.addEventListener('click',svcConfirmImport);
+  $('#cancel-import')?.addEventListener('click',svcCancelImport);
+  svcObserveThumbnails($('.data-rows',body));
+  detail.innerHTML=`<div class="panel-title">IMAGE DETAILS</div>${selected?`<div class="detail-content"><div class="detail-preview" data-thumb-for="${esc(selected.id)}"><span>影像預覽載入中</span></div><h2>${esc(selected.display_name)}</h2><div class="detail-kv"><span>尺寸</span><strong>${selected.dimensions.width} × ${selected.dimensions.height} px</strong><span>Patient ID</span><strong>${esc(selected.patient_id||'未指定')}</strong><span>Split</span><strong>${esc(selected.split||'未指定')}</strong><span>Reference mask</span><strong>${esc(selected.reference_mask_status)}</strong><span>來源</span><strong>${esc(selected.source_status)}</strong></div><button class="btn" id="open-data-image" ${selected.source_status==='available'?'':'disabled'}>在 Analysis 開啟</button><div class="detail-note">${version?`Dataset Version <span class="mono">${esc(version.id.slice(0,8))}</span> · 驗證 ${esc(version.validation_summary.status)} · ${version.validation_summary.finding_ids.length} 項 finding`:'尚無 Dataset Version'}</div></div>`:'<div class="detail-empty">選取影像查看 metadata 與 reference mask 狀態。</div>'}`;
+  if(selected){svcLoadThumbnail(selected.id,$('.detail-preview',detail));$('#open-data-image',detail).onclick=async()=>{await svcOpenImage(selected.id);if(activeSample()?.serviceImageId===selected.id)setWorkspace('result')}}
+}
+
+function renderResultPanel(){
+  const shell=$('#context-panel');if(!shell)return;
+  if(!$('#result-context',shell))return;
+  const host=$('#result-context',shell),online=svc.isConnected()&&svc.currentSessionState()==='ready';
+  const s=activeSample(),r=selectedRun?.record,m=selectedRun?.metric_set;
+  const currentImage=!!s?.serviceImageId&&svcImages.some(im=>im.id===s.serviceImageId);
+  const metric=(v,digits=2)=>typeof v==='number'?v.toFixed(digits):'—';
+  host.innerHTML=`<div class="panel-title">QUANTIFICATION</div><div class="result-content">
+    <div class="eyebrow">PUBLISHED ALGOPIPE</div>
+    <label class="result-select">分析方法<select id="result-pipe" ${online?'':'disabled'}><option value="">${executablePipes.length?'選擇可執行版本':'尚無可執行版本'}</option>${executablePipes.map(p=>`<option value="${esc(p.id+'@'+p.version)}" ${selectedPipeKey===p.id+'@'+p.version?'selected':''}>${esc(p.name||p.id)} · ${esc(p.version)}</option>`).join('')}</select></label>
+    <div class="result-context-card"><span>Dataset Version</span><strong>${svcVersionId?esc(svcVersionId.slice(0,8)):'尚未選擇'}</strong><span>Image Asset</span><strong>${s?.serviceImageId?esc(s.name):'請至 Dataset 開啟影像'}</strong></div>
+    <button class="btn result-run" id="result-run" ${online&&currentImage&&selectedPipeKey?'':'disabled'}>▶ 正式執行選定版本</button>
+    <div class="result-divider"></div>
+    <div class="eyebrow">SELECTED RUN</div>
+    ${r?`<div class="result-run-id"><strong>${esc(r.id.slice(0,8))}</strong><span class="status-chip ${r.status==='succeeded'?'ok':r.status==='failed'?'errc':'warnc'}">${esc(r.status)}</span></div>
+      <div class="result-metric"><span>Area</span><strong>${metric(m?.area_mm2)}<small>${m?.area_mm2==null?'尚未計算':' mm²'}</small></strong></div>
+      <div class="result-metric"><span>Dice</span><strong>${metric(m?.dice,3)}<small>${m?.dice==null?'尚未計算':''}</small></strong></div>
+      <div class="result-kv"><span>前景像素</span><strong>${m?.foreground_pixels??'—'}</strong><span>連通元件</span><strong>${m?.connected_components??'—'}</strong><span>AlgoPipe</span><strong>${esc(r.algopipe_id?r.algopipe_id+'@'+r.algopipe_version:'舊版 inline snapshot')}</strong><span>Seed</span><strong>${esc(r.seed)}</strong></div>
+      ${r.error_summary?`<p class="errc">${esc(r.error_summary)}</p>`:''}
+      <div class="result-actions"><button class="btn ghost" id="run-source">開啟輸入影像</button><button class="btn ghost" id="run-provenance" ${r.algopipe_id?'':'disabled'}>查看來源鏈</button></div>
+      ${selectedProvenance?`<div class="provenance"><div class="eyebrow">EXPLAINABILITY</div><p>方法 ${esc(selectedProvenance.algopipe?.id||r.algopipe_id)} · Dataset ${esc(r.dataset_version_id.slice(0,8))}</p><p>${selectedProvenance.nodes?.length??0} 個固定節點版本；${selectedProvenance.amendments?.length??0} 組 amendment 記錄。</p></div>`:''}`
+      :'<div class="detail-empty">完成正式 Run 後，這裡會顯示實際量測值與來源鏈。未產生的指標保持空白。</div>'}
+    <div class="result-divider"></div><div class="eyebrow">RESEARCH USE ONLY</div><p class="dim">預覽與正式 Run 分開保存。醫療診斷與治療不在本工具用途內。</p>
+  </div>`;
+  $('#result-pipe',host).onchange=e=>{selectedPipeKey=e.target.value;renderResultPanel()};
+  $('#result-run',host).onclick=svcRunPublished;
+  $('#run-source',host)?.addEventListener('click',async()=>{if(r){await svcOpenImage(r.image_asset_id);setWorkspace('result')}});
+  $('#run-provenance',host)?.addEventListener('click',async()=>{if(!r?.algopipe_id)return;try{selectedProvenance=await svc.request('GET',`/runs/${r.id}/provenance`);renderResultPanel()}catch(e){toast('Could not load provenance: '+e.message,true)}});
+  const runButton=$('#runbtn');if(runButton)runButton.disabled=!(online&&currentImage&&selectedPipeKey);
+}
+
 
 // ---- viewer ----
 const cv=$('#cv'),wrap=$('#stagewrap'),stage=$('#stage');
@@ -360,14 +530,15 @@ function toCanvas(w,h,d,maskAlpha){const c=document.createElement('canvas');c.wi
 function paint(){
   updateModeButtons();
   const s=activeSample();
+  $('#analysis-empty').hidden=!!s;
   if(!s){
     cv.width=1;cv.height=1;
-    $('#hud').innerHTML='<b>No image open</b><br>Import an image, or select one from Dataset.';
+    $('#hud').innerHTML='';
     $('#legend').innerHTML='';$('#scalebar').innerHTML='';
     return;
   }
   const im=getImg(s);cv.width=im.w;cv.height=im.h;const x=cv.getContext('2d');
-  const vis=results&&results.sampleId===activeId?results:null;
+  const vis=officialOutput&&officialOutput.sampleId===activeId?officialOutput:null;
   if(mode==='output'&&vis&&vis.visual){const v=vis.visual;
     x.drawImage(toCanvas(v.w,v.h,v.kind==='mask'?v.d.map(m=>m*255):v.d),0,0)}
   else x.drawImage(toCanvas(im.w,im.h,im.d),0,0);
@@ -378,10 +549,9 @@ function paint(){
     for(let i=0;i<im.gt.length;i++)if(im.gt[i]){id.data[i*4]=id.data[i*4]*.45+R*.55;id.data[i*4+1]=id.data[i*4+1]*.45+G*.55;id.data[i*4+2]=id.data[i*4+2]*.45+B*.55}x.putImageData(id,0,0)}
   const noRes=mode==='output'&&!vis;
   const svcStale=s.serviceImageId&&svc.isConnected()&&svc.currentSessionState()!=='ready';
-  $('#hud').innerHTML=`${svcStale?'<div class="errc">⚠ Service disconnected — this content may be stale</div>':''}<b>${s.name}</b><br>${im.w} × ${im.h} px · ${s.patient} · ${s.split}${s.serviceImageId?' · reference mask '+(im.gt?'available':'unavailable'):''}<br>${noRes?'<span style="color:var(--mask)">No result yet — press Run pipeline</span>':'mode: '+mode}`;
+  $('#hud').innerHTML=`${svcStale?'<div class="errc">⚠ Service disconnected — this content may be stale</div>':''}<b>${esc(s.name)}</b><br>${im.w} × ${im.h} px · ${esc(s.patient)} · ${esc(s.split)}${s.serviceImageId?' · reference mask '+(im.gt?'available':'unavailable'):''}<br>${noRes?'<span style="color:var(--mask)">此 Run 沒有可顯示的影像輸出</span>':'mode: '+mode}`;
   $('#legend').innerHTML=mode==='overlay'&&im.gt?'<span><i></i>reference mask</span>':'';
-  const mm=Math.round(100/s.spacing/view.s/10)*10||10;
-  $('#scalebar').innerHTML=`<div style="width:${(10/s.spacing)*view.s}px"></div>10 mm`;
+  $('#scalebar').innerHTML=s.spacing?`<div style="width:${(10/s.spacing)*view.s}px"></div>10 mm`:'';
   applyView();
 }
 function updateModeButtons(){
@@ -393,12 +563,14 @@ function updateModeButtons(){
     return;
   }
   $$('[data-m]').forEach(b=>{b.disabled=false;b.title=''});
+  const out=$('[data-m="output"]',$('#modes'));
+  if(out){out.disabled=!(officialOutput&&officialOutput.sampleId===activeId);out.title=out.disabled?'選取有影像輸出的正式 Run。':''}
   const reason=s.overlayDisabledReason||(getImg(s).gt?null:'No reference mask available for this image.');
   const btn=$('[data-m="overlay"]',$('#modes'));
   if(btn){btn.disabled=!!reason;btn.title=reason||''}
-  if(reason&&mode==='overlay'){mode='input';$$('#modes button').forEach(x=>x.classList.toggle('on',x.dataset.m===mode))}
+  if((reason&&mode==='overlay')||(out?.disabled&&mode==='output')){mode='input';$$('#modes button').forEach(x=>x.classList.toggle('on',x.dataset.m===mode))}
 }
-function applyView(){stage.style.transform=`translate(${view.x}px,${view.y}px) scale(${view.s})`;cv.style.imageRendering=view.s>3?'pixelated':'auto';const s=activeSample();if(s)$('#scalebar').lastChild&&($('#scalebar').firstChild.style.width=(10/s.spacing)*view.s+'px')}
+function applyView(){stage.style.transform=`translate(${view.x}px,${view.y}px) scale(${view.s})`;cv.style.imageRendering=view.s>3?'pixelated':'auto';const s=activeSample();if(s?.spacing&&$('#scalebar').firstChild)$('#scalebar').firstChild.style.width=(10/s.spacing)*view.s+'px'}
 function fit(){const s=activeSample();if(!s)return;const im=getImg(s),W=wrap.clientWidth,H=wrap.clientHeight;if(!W)return;
   view.s=Math.min(W/im.w,H/im.h)*.92;view.x=(W-im.w*view.s)/2;view.y=(H-im.h*view.s)/2;applyView()}
 function zoomTo(k,cx=wrap.clientWidth/2,cy=wrap.clientHeight/2){const n=Math.max(.2,Math.min(16,k));view.x=cx-(cx-view.x)*n/view.s;view.y=cy-(cy-view.y)*n/view.s;view.s=n;applyView()}
@@ -411,21 +583,23 @@ wrap.addEventListener('pointermove',e=>{
   $('#px').textContent=ix>=0&&iy>=0&&ix<im.w&&iy<im.h?`x ${ix}  y ${iy}  I ${im.d[iy*im.w+ix]|0}`:'—'});
 wrap.addEventListener('pointerup',()=>{pan=null;wrap.classList.remove('pan')});
 $('#zin').onclick=()=>zoomTo(view.s*1.25);$('#zout').onclick=()=>zoomTo(view.s/1.25);$('#zfit').onclick=fit;$('#z1').onclick=()=>zoomTo(1);
+$('#analysis-empty').onpointerdown=e=>e.stopPropagation();
+$('#choose-analysis-image').onclick=e=>{e.stopPropagation();setWorkspace('data')};
 $('#modes').onclick=e=>{const b=e.target.closest('button');if(!b||b.disabled)return;
   mode=b.dataset.m;$$('#modes button').forEach(x=>x.classList.toggle('on',x===b));paint()};
 
 function renderTabs(){
-  $('#tabs').innerHTML=openTabs.map(id=>{const s=samples.find(x=>x.id===id);return s?`<div class="tab ${id===activeId?'on':''}" data-id="${id}"><span>${s.name}</span><b data-x="${id}" title="Close">✕</b></div>`:''}).join('');
+  $('#tabs').innerHTML=`<span class="analysis-tab-title">AlgoPipe Analysis</span>`+openTabs.map(id=>{const s=samples.find(x=>x.id===id);return s?`<div class="tab ${id===activeId?'on':''}" data-id="${id}"><span>${esc(s.name)}</span><b data-x="${id}" title="Close">✕</b></div>`:''}).join('');
   $$('.tab').forEach(t=>t.onclick=e=>{if(e.target.dataset.x){closeTab(e.target.dataset.x);return}openSample(t.dataset.id)});
 }
 function openSample(id){
   if(!samples.some(s=>s.id===id))return;
-  if(!openTabs.includes(id))openTabs.push(id);activeId=id;renderTabs();renderLeft();paint();fit();renderBottom();
+  if(!openTabs.includes(id))openTabs.push(id);activeId=id;renderTabs();paint();fit();renderBottom();renderResultPanel();
 }
 function closeTab(id){
   openTabs=openTabs.filter(x=>x!==id);
   if(activeId===id)activeId=openTabs[0]||null;
-  renderTabs();renderLeft();paint();if(activeId){fit()}renderBottom();
+  renderTabs();paint();if(activeId){fit()}renderBottom();renderResultPanel();
 }
 $('#file').onchange=e=>{const f=e.target.files[0];if(!f)return;const img=new Image();img.onload=()=>{
   const k=Math.min(1,1400/Math.max(img.width,img.height)),w=Math.round(img.width*k),h=Math.round(img.height*k),c=document.createElement('canvas');c.width=w;c.height=h;
@@ -518,7 +692,7 @@ function run(){
   toast(`Run complete — ${steps.length} steps${dc!=null?', Dice '+dc.toFixed(3):''}`);
   if(mode==='input'){mode='overlay';$$('#modes button').forEach(b=>b.classList.toggle('on',b.dataset.m===mode));paint()}
 }
-$('#runbtn').onclick=run;
+$('#runbtn').onclick=svcRunPublished;
 
 
 // ---- bottom panel ----
@@ -528,31 +702,21 @@ $('#btabs').onclick=e=>{const b=e.target.closest('button');if(!b)return;if(b.id=
 function renderBottom(){
   const B=$('#bbody');
   if(btab==='metrics'){
-    if(!activeSample()){B.innerHTML='<div class="note">No image open. Import an image or select one from Dataset to begin.</div>';return}
-    if(!results||results.sampleId!==activeId){B.innerHTML='<div class="note">No run for this image yet. Press <b>Run pipeline</b> (⌘↵) to compute mask, Dice and area.</div>';return}
-    const t=results.table;
+    const record=selectedRun?.record,m=selectedRun?.metric_set;
+    if(!record){B.innerHTML='<div class="note">選取一筆正式 Run 查看後端保存的量測值。尚未計算的欄位不會顯示示意數字。</div>';return}
     B.innerHTML=`<div class="metrics">
-      <div class="metric"><small>Dice vs reference</small><strong>${results.dice==null?'—':results.dice.toFixed(3)}</strong></div>
-      <div class="metric"><small>Area</small><strong>${t?t.mm2.toFixed(1):'—'}<em>mm²</em></strong></div>
-      <div class="metric"><small>Pixels</small><strong>${t?t.px:'—'}</strong></div>
-      <div class="metric"><small>Components</small><strong>${t?t.cc:'—'}</strong></div></div>
-      <table class="tbl"><tr><th>Step</th><th>Node</th><th>ms</th></tr>${results.steps.map((s,i)=>`<tr><td>${i+1}</td><td>${DEFS[s.n.type].label}</td><td>${s.ms.toFixed(1)}</td></tr>`).join('')}</table>
-      <div class="note">${results.notes.join(' · ')} · preview resolution</div>`;
+      <div class="metric"><small>Dice vs reference</small><strong>${m?.dice==null?'—':m.dice.toFixed(3)}</strong></div>
+      <div class="metric"><small>Area</small><strong>${m?.area_mm2==null?'—':m.area_mm2.toFixed(2)}<em>${m?.area_mm2==null?'':'mm²'}</em></strong></div>
+      <div class="metric"><small>Pixels</small><strong>${m?.foreground_pixels??'—'}</strong></div>
+      <div class="metric"><small>Components</small><strong>${m?.connected_components??'—'}</strong></div></div>
+      <div class="note mono">Run ${esc(record.id)} · ${esc(record.status)} · Dataset ${esc(record.dataset_fingerprint.slice(0,16))}</div>`;
   }else if(btab==='runs'){
-    const local=runs.length?`<table class="tbl"><tr><th>Run</th><th>Image</th><th>Dice</th><th>Area mm²</th><th>Dataset fp</th><th>Graph</th><th>Time</th></tr>${runs.slice().reverse().map(r=>`<tr><td>${r.id}</td><td>${r.img}</td><td>${r.dice==null?'—':r.dice.toFixed(3)}</td><td>${r.area==null?'—':r.area.toFixed(1)}</td><td>${r.fp}</td><td>${r.graph}</td><td>${r.t.toLocaleTimeString()}</td></tr>`).join('')}</table><div class="note">Runs are immutable snapshots: graph, parameters, dataset fingerprint and seed.</div>`:'<div class="note">No runs yet.</div>';
-    const svcSection=svc.isConnected()?`<div class="sh" style="margin-top:10px"><span>Official Runs (service)</span><button class="tb" title="Run current pipeline as an official Run" id="svcrunbtn">▶</button></div>`+
-      (svcRuns.length?`<table class="tbl"><tr><th>Run</th><th>Status</th><th>Seed</th><th>Dataset fp</th><th>Started</th><th>Note</th></tr>${svcRuns.slice().reverse().map(r=>`<tr><td class="mono">${r.id.slice(0,8)}</td><td>${r.status}${r.status==='running'?' …':''}</td><td>${r.seed}</td><td class="mono">${r.dataset_fingerprint.slice(0,10)}</td><td>${new Date(r.started_at).toLocaleTimeString()}</td><td>${r.error_summary||'—'}</td></tr>`).join('')}</table><div class="note">Official Runs are durable and fully traceable — dataset fingerprint, image, pipeline and seed are recorded atomically on success (FR-018/FR-020).</div>`:'<div class="note">No official Runs yet for this Dataset Version. Open a Dataset image, then Pipeline → Run via Service (official).</div>'):'';
-    B.innerHTML=local+svcSection;
-    $('#svcrunbtn',B)&&($('#svcrunbtn').onclick=()=>svcRunOfficial());
+    B.innerHTML=svcRuns.length?`<table class="tbl run-table"><tr><th>Run</th><th>Status</th><th>AlgoPipe</th><th>開始時間</th><th>備註</th></tr>${svcRuns.slice().reverse().map(r=>`<tr data-run-id="${esc(r.id)}" class="${r.id===selectedRunId?'selected':''}"><td class="mono">${esc(r.id.slice(0,8))}</td><td>${esc(r.status)}</td><td>${esc(r.algopipe_id?r.algopipe_id+'@'+r.algopipe_version:'舊版 inline snapshot')}</td><td>${esc(new Date(r.started_at).toLocaleString())}</td><td>${esc(r.error_summary||'—')}</td></tr>`).join('')}</table>`:'<div class="note">此 Dataset Version 尚無正式 Run。選擇可執行的已發布 AlgoPipe 與資料影像後即可開始。</div>';
+    $$('[data-run-id]',B).forEach(row=>row.onclick=()=>selectRun(row.dataset.runId));
   }else{
-    const byPatient={};samples.forEach(s=>(byPatient[s.patient]??=new Set()).add(s.split));
-    const leak=Object.entries(byPatient).filter(([p,v])=>p!=='—'&&v.size>1);
-    const items=[[leak.length?'errc':'ok',leak.length?'✕':'✓',leak.length?'Patient leakage: '+leak.map(l=>l[0]).join(', '):'No patient appears in more than one split'],
-      ['ok','✓','Every reference mask is paired to an image'],
-      ...samples.filter(s=>s.patient==='—').map(s=>['warnc','!',`${s.name}: patient ID missing — set it before splitting`]),
-      ['ok','✓',bad=>0||'Pipeline types match, no cycles']];
-    const ge=validateGraph();items[items.length-1]=[ge?'errc':'ok',ge?'✕':'✓',ge||'Pipeline types match, no cycles'];
-    B.innerHTML=items.map(i=>`<div class="row" style="padding-left:14px;cursor:default"><span class="${i[0]}">${i[1]}</span><span>${i[2]}</span></div>`).join('');
+    const v=svcVersions.find(x=>x.id===svcVersionId);
+    B.innerHTML=v?`<div class="note"><span class="status-chip ${v.validation_summary.status==='ok'?'ok':v.validation_summary.status==='blocked'?'errc':'warnc'}">${esc(v.validation_summary.status)}</span> ${v.validation_summary.finding_ids.length} 項後端驗證 finding · Dataset fingerprint <span class="mono">${esc(v.fingerprint)}</span></div>
+      ${svcImages.filter(im=>!im.patient_id||!im.split||im.reference_mask_status!=='valid'||im.source_status!=='available').map(im=>`<div class="row"><span class="nm">${esc(im.display_name)}</span><span class="mono dim">${!im.patient_id?'patient 未指定 · ':''}${!im.split?'split 未指定 · ':''}mask ${esc(im.reference_mask_status)} · ${esc(im.source_status)}</span></div>`).join('')||'<div class="note">影像清單沒有缺漏狀態。</div>'}`:'<div class="note">先選擇 Dataset Version，才能查看驗證摘要。</div>';
   }
 }
 
@@ -570,14 +734,12 @@ $$('.rz,.rzy').forEach(z=>{z.onpointerdown=e=>{
 
 // ---- keys boot ----
 addEventListener('keydown',e=>{const m=e.metaKey||e.ctrlKey;
-  if(m&&e.key==='Enter'){e.preventDefault();run()}
-  else if(m&&e.key.toLowerCase()==='b'){e.preventDefault();toggle(e.altKey?'right':'left')}
-  else if(m&&e.key.toLowerCase()==='j'){e.preventDefault();toggleBottom()}
-  else if((e.key==='Delete'||e.key==='Backspace')&&!/INPUT|SELECT/.test(document.activeElement.tagName))delSel()});
+  if(m&&e.key==='Enter'&&workspace==='result'){e.preventDefault();svcRunPublished()}
+  else if(m&&e.key.toLowerCase()==='j'&&workspace==='result'){e.preventDefault();toggleBottom()}});
 addEventListener('resize',fit);
 
 buildMenus();buildActivity();renderPalette();resetGraph();renderGraph();renderTabs();
-if(innerWidth<760){$('#left').classList.add('hidden');$('#right').classList.add('hidden')}
 svc.autoConnect();
-renderLeft();paint();setB('metrics');
+setWorkspace('data');paint();setB('metrics');
+svc.onEventType(['kb_scan_complete'],()=>loadExecutablePipes());
 requestAnimationFrame(()=>{$('#toast').hidden=true});

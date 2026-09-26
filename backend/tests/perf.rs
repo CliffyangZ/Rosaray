@@ -158,3 +158,58 @@ async fn representative_project_meets_latency_targets() {
 
     println!("note: 32x32 fixtures; the 50-megapixel decode path is not covered by this pass");
 }
+
+// ---- feature 002: knowledge-base catalog scale (SC-003, plan Performance Goals) ----
+
+/// Catalog search/filter stays within a second at ~2,000 bundles, and a rebuild
+/// reports progress as it goes.
+#[tokio::test]
+async fn catalog_search_is_fast_at_two_thousand_bundles_and_rebuild_reports_progress() {
+    let svc = common::spawn().await;
+    for i in 0..2_000 {
+        let id = format!("bench.node{i}");
+        let dir = svc.kb_root.join("drafts/nodes").join(&id);
+        common::write_bundle(
+            &dir,
+            &[
+                ("ALGONODE.md", &format!("---\nschema: quantify-kb/1\nkind: algonode\nid: {id}\nversion: 0.1.0\nname: Bench node {i}\nsummary: measures thing number {i}\nstatus: draft\nresearch_use_only: true\nintended_use: benchmarking {}\nlimitations: none\n---\n", if i % 2 == 0 { "gingival" } else { "enamel" })),
+                ("contract.yaml", "schema: quantify-kb/1\ninputs: []\noutputs: []\n"),
+            ],
+        );
+    }
+    let mut events = svc.state.event_tx.subscribe();
+    let start = Instant::now();
+    let (s, r) = svc.json(Method::POST, "/kb/rebuild", None).await;
+    let rebuild = start.elapsed();
+    assert_eq!(s, 200, "{r}");
+    assert_eq!(r["indexed"], 2_000);
+
+    let mut progress = 0;
+    loop {
+        match events.try_recv() {
+            Ok(e) => {
+                if serde_json::to_value(&e).unwrap()["type"] == "kb_scan_progress" {
+                    progress += 1;
+                }
+            }
+            // The channel is bounded; events dropped from it were still emitted.
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => progress += n,
+            Err(_) => break,
+        }
+    }
+    assert!(progress >= 100, "progress fired {progress} times during the rebuild");
+
+    let mut worst = Duration::ZERO;
+    for q in ["?q=gingival", "?q=number%201999", "?kind=algonode&maturity=specification_only&limit=50", "?q=benchmarking&domain=x", "?release=draft&limit=500"] {
+        let t = Instant::now();
+        let (s, _) = svc.json(Method::GET, &format!("/kb/entries{q}"), None).await;
+        assert_eq!(s, 200);
+        worst = worst.max(t.elapsed());
+    }
+    println!("rebuild of 2,000 bundles: {rebuild:?}; slowest catalog query: {worst:?}");
+    assert!(worst < Duration::from_secs(1), "catalog query took {worst:?}");
+    // An incremental refresh with nothing changed is cheap.
+    let t = Instant::now();
+    svc.json(Method::POST, "/kb/refresh", None).await;
+    assert!(t.elapsed() < Duration::from_secs(5), "no-op refresh took {:?}", t.elapsed());
+}

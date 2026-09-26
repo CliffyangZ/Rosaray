@@ -11,6 +11,8 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::api::errors::{KbError, KbErrorCode};
+use crate::api::kb::ApiError;
 use crate::api::AppState;
 use crate::data_engine::run::{compute_run_output, RunError};
 use crate::data_engine::validation::check_source_availability;
@@ -28,15 +30,39 @@ pub struct RunPolicyRequest {
 }
 
 #[derive(Deserialize)]
+pub struct AlgoPipeRef {
+    pub id: String,
+    pub version: String,
+}
+
+#[derive(Deserialize)]
 pub struct PostRunRequest {
     pub dataset_version_id: Uuid,
     pub image_asset_id: Uuid,
-    pub pipeline_snapshot: PipelineGraph,
-    pub target_node_id: String,
+    /// Legacy body: a graph sent inline. Mutually exclusive with `algopipe`.
+    #[serde(default)]
+    pub pipeline_snapshot: Option<PipelineGraph>,
+    /// Feature 002 body: a published AlgoPipe version, admitted only if eligible.
+    #[serde(default)]
+    pub algopipe: Option<AlgoPipeRef>,
+    /// Required for the legacy body; for an AlgoPipe it defaults to the pipe's sole sink.
+    #[serde(default)]
+    pub target_node_id: Option<String>,
     pub seed: u64,
     #[serde(default)]
     pub run_policy: Option<RunPolicyRequest>,
 }
+
+/// What a finished computation hands to the shared persistence step.
+pub(crate) struct Computed {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) duration_ms: u64,
+    /// `(area_mm2, foreground_pixels, connected_components)` when the output is a
+    /// measurement table; never fabricated.
+    pub(crate) metrics: Option<(Option<f64>, Option<i64>, Option<i64>)>,
+}
+
+pub(crate) type ComputeFn = Box<dyn FnOnce() -> Result<Computed, RunError> + Send>;
 
 #[derive(Serialize)]
 pub struct PostRunResponse {
@@ -51,7 +77,15 @@ pub struct PostRunResponse {
 pub async fn post_runs(
     State(state): State<AppState>,
     Json(req): Json<PostRunRequest>,
-) -> Result<Json<PostRunResponse>, ServiceError> {
+) -> Result<Json<PostRunResponse>, ApiError> {
+    let bad = |m: &str| ApiError::Kb(KbError::new(KbErrorCode::BundleInvalid, m.to_string()));
+    let snapshot_graph = match (&req.pipeline_snapshot, &req.algopipe) {
+        (Some(_), Some(_)) => return Err(bad("send either `pipeline_snapshot` or `algopipe`, not both")),
+        (None, None) => return Err(bad("send `pipeline_snapshot` or `algopipe`")),
+        (None, Some(_)) => return crate::api::algopipe_run::post_algopipe_run(state, req).await,
+        (Some(g), None) => g.clone(),
+    };
+    let legacy_target = req.target_node_id.clone().ok_or_else(|| bad("`target_node_id` is required with `pipeline_snapshot`"))?;
     let (asset, version) = {
         let db = state.db.lock().unwrap();
         let asset = dataset_repo::image_asset_by_id(&db, req.image_asset_id)
@@ -67,13 +101,13 @@ pub async fn post_runs(
     // creation, the same way it blocks a new Preview.
     match check_source_availability(&asset) {
         ImageAssetStatus::Available => {}
-        ImageAssetStatus::SourceMissing => return Err(ServiceError::SourceMissing),
-        ImageAssetStatus::SourceChanged => return Err(ServiceError::SourceChanged),
+        ImageAssetStatus::SourceMissing => return Err(ServiceError::SourceMissing.into()),
+        ImageAssetStatus::SourceChanged => return Err(ServiceError::SourceChanged.into()),
     }
 
     let run_id = Uuid::new_v4();
     let started_at = Utc::now().to_rfc3339();
-    let snapshot = PipelineSnapshot::from_graph(&req.pipeline_snapshot);
+    let snapshot = PipelineSnapshot::from_graph(&snapshot_graph);
     let run_input_artifact = RunInputArtifact {
         id: Uuid::new_v4(),
         content_identity: asset.imported_content_identity.clone(),
@@ -108,7 +142,7 @@ pub async fn post_runs(
                 image_asset_identity: asset.imported_content_identity.clone(),
                 run_input_artifact_id: run_input_artifact.id,
                 pipeline_snapshot_id: snapshot.id,
-                target_node_id: req.target_node_id.clone(),
+                target_node_id: legacy_target.clone(),
                 seed: req.seed,
                 node_versions: snapshot.node_versions.clone(),
                 started_at: started_at.clone(),
@@ -118,6 +152,10 @@ pub async fn post_runs(
                 metric_set_id: None,
                 error_summary: None,
                 failed_stage: None,
+                algopipe_id: None,
+                algopipe_version: None,
+                algopipe_content_id: None,
+                eligibility_event_id: None,
             },
         )
         .map_err(|_| ServiceError::ServiceUnavailable)?;
@@ -129,20 +167,25 @@ pub async fn post_runs(
     let image_asset_id = asset.id;
     let seed = req.seed;
     let pipeline_snapshot_id = snapshot.id;
-    let graph = req.pipeline_snapshot;
-    let target_node_id = req.target_node_id;
-    let source_identity = asset.imported_content_identity;
+    let target_node_id = legacy_target;
+    let compute: ComputeFn = {
+        let graph = snapshot_graph;
+        let target = target_node_id.clone();
+        let source = asset.imported_content_identity.clone();
+        Box::new(move || {
+            compute_run_output(&graph, &target, &source).map(|o| Computed { bytes: o.output_bytes, duration_ms: o.duration_ms, metrics: None })
+        })
+    };
     tokio::spawn(async move {
         execute_run(
             state_clone,
             run_id,
             dataset_version_id,
             image_asset_id,
-            source_identity,
-            graph,
             target_node_id,
             seed,
             pipeline_snapshot_id,
+            compute,
         )
         .await;
     });
@@ -160,16 +203,15 @@ pub async fn post_runs(
 /// `error_summary` (FR-021) and leaves no partially-populated `succeeded`
 /// row.
 #[allow(clippy::too_many_arguments)]
-async fn execute_run(
+pub(crate) async fn execute_run(
     state: AppState,
     run_id: Uuid,
     dataset_version_id: Uuid,
     image_asset_id: Uuid,
-    source_identity: String,
-    graph: PipelineGraph,
     target_node_id: String,
     seed: u64,
     pipeline_snapshot_id: Uuid,
+    compute_fn: ComputeFn,
 ) {
     let _ = state.event_tx.send(Event::new(
         run_id,
@@ -180,15 +222,7 @@ async fn execute_run(
         },
     ));
 
-    let compute = {
-        let graph = graph.clone();
-        let target_node_id = target_node_id.clone();
-        let source_identity = source_identity.clone();
-        tokio::task::spawn_blocking(move || {
-            compute_run_output(&graph, &target_node_id, &source_identity)
-        })
-        .await
-    };
+    let compute = tokio::task::spawn_blocking(compute_fn).await;
     let outcome = match compute {
         Ok(Ok(outcome)) => outcome,
         Ok(Err(err)) => {
@@ -216,7 +250,7 @@ async fn execute_run(
         },
     ));
 
-    let output_bytes = outcome.output_bytes;
+    let output_bytes = outcome.bytes;
     let write_result = {
         let state = state.clone();
         tokio::task::spawn_blocking(move || state.blob_store.write(&state.master_key, &output_bytes))
@@ -275,9 +309,10 @@ async fn execute_run(
         // fabricated, matching data-model.md's "null when not computed"
         // rule for `dice`.
         dice: None,
-        area_mm2: None,
-        foreground_pixels: None,
-        connected_components: None,
+        // Only taken from a measurement table the pipe itself produced.
+        area_mm2: outcome.metrics.and_then(|m| m.0),
+        foreground_pixels: outcome.metrics.and_then(|m| m.1),
+        connected_components: outcome.metrics.and_then(|m| m.2),
         step_timings,
     };
 
@@ -363,7 +398,17 @@ pub async fn get_run(
         .output_content_identities
         .iter()
         .cloned()
-        .map(|identity| state.register_artifact(identity, ArtifactKind::Image))
+        .map(|identity| {
+            // AlgoPipe Runs may end in a measurement table (JSON) rather than a PNG.
+            let kind = if record.algopipe_id.is_some()
+                && state.blob_store.read(&state.master_key, &identity).map(|b| !b.starts_with(b"\x89PNG")).unwrap_or(false)
+            {
+                ArtifactKind::Measurement
+            } else {
+                ArtifactKind::Image
+            };
+            state.register_artifact(identity, kind)
+        })
         .collect();
 
     Ok(Json(RunRecordResponse {
@@ -401,4 +446,5 @@ pub fn router() -> axum::Router<AppState> {
     axum::Router::new()
         .route("/runs", post(post_runs).get(list_runs))
         .route("/runs/:run_id", get(get_run))
+        .route("/runs/:run_id/provenance", get(crate::api::algopipe_run::get_provenance))
 }

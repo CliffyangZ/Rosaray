@@ -41,6 +41,13 @@ pub struct GraphNode {
 pub struct GraphEdge {
     pub from: String,
     pub to: String,
+    /// Named output port on `from` (feature 002 DAG graphs). Absent on
+    /// legacy chain graphs; when absent it never enters any identity hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_port: Option<String>,
+    /// Named input port on `to`; see `from_port`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_port: Option<String>,
 }
 
 /// The graph shape sent as `pipeline_snapshot` in `POST /preview` and
@@ -58,35 +65,53 @@ impl PipelineGraph {
         self.nodes.iter().find(|n| n.node_id == node_id)
     }
 
-    fn input_node_id(&self, node_id: &str) -> Option<&str> {
-        self.edges
-            .iter()
-            .find(|e| e.to == node_id)
-            .map(|e| e.from.as_str())
+    /// Incoming edges of `node_id` in a deterministic order (by target
+    /// port, then source node, then source port).
+    fn inputs_of(&self, node_id: &str) -> Vec<&GraphEdge> {
+        let mut inputs: Vec<&GraphEdge> = self.edges.iter().filter(|e| e.to == node_id).collect();
+        inputs.sort_by(|a, b| {
+            (&a.to_port, &a.from, &a.from_port).cmp(&(&b.to_port, &b.from, &b.from_port))
+        });
+        inputs
     }
 
-    /// The source-to-target chain of nodes feeding `target_node_id`,
-    /// inclusive of the target itself, in execution order. Each node in
-    /// this graph shape has at most one input edge, so the chain is a
-    /// simple walk back to a root.
-    fn chain_to(&self, target_node_id: &str) -> Result<Vec<&GraphNode>, PipelineSnapshotError> {
-        let mut chain = Vec::new();
-        let mut current = target_node_id.to_string();
-        loop {
-            let node = self
-                .node(&current)
-                .ok_or_else(|| PipelineSnapshotError::UnknownNode(current.clone()))?;
-            chain.push(node);
-            if chain.len() > self.nodes.len() {
-                return Err(PipelineSnapshotError::Cycle);
-            }
-            match self.input_node_id(&current) {
-                Some(prev) => current = prev.to_string(),
-                None => break,
-            }
+    /// `target_node_id` and every node that (transitively) feeds it, in a
+    /// topological execution order (each node after all its inputs). For a
+    /// legacy single-input chain this is exactly the source-to-target chain.
+    pub fn ancestors_of(
+        &self,
+        target_node_id: &str,
+    ) -> Result<Vec<&GraphNode>, PipelineSnapshotError> {
+        enum Mark {
+            Visiting,
+            Done,
         }
-        chain.reverse();
-        Ok(chain)
+        fn visit<'a>(
+            graph: &'a PipelineGraph,
+            id: &str,
+            marks: &mut std::collections::HashMap<String, Mark>,
+            order: &mut Vec<&'a GraphNode>,
+        ) -> Result<(), PipelineSnapshotError> {
+            match marks.get(id) {
+                Some(Mark::Done) => return Ok(()),
+                Some(Mark::Visiting) => return Err(PipelineSnapshotError::Cycle),
+                None => {}
+            }
+            let node = graph
+                .node(id)
+                .ok_or_else(|| PipelineSnapshotError::UnknownNode(id.to_string()))?;
+            marks.insert(id.to_string(), Mark::Visiting);
+            for edge in graph.inputs_of(id) {
+                visit(graph, &edge.from, marks, order)?;
+            }
+            marks.insert(id.to_string(), Mark::Done);
+            order.push(node);
+            Ok(())
+        }
+        let mut marks = std::collections::HashMap::new();
+        let mut order = Vec::new();
+        visit(self, target_node_id, &mut marks, &mut order)?;
+        Ok(order)
     }
 }
 
@@ -112,6 +137,10 @@ pub struct PipelineSnapshot {
     pub node_versions: std::collections::BTreeMap<String, String>,
     pub canonical_parameters: std::collections::BTreeMap<String, serde_json::Value>,
     pub immutable: bool,
+    /// Feature 002: the published AlgoPipe `content_id` this snapshot was built
+    /// from. Not part of the snapshot's identity.
+    #[serde(default)]
+    pub source_algopipe_content_id: Option<String>,
 }
 
 impl PipelineSnapshot {
@@ -131,6 +160,7 @@ impl PipelineSnapshot {
                 .collect(),
             graph_identity,
             immutable: true,
+            source_algopipe_content_id: None,
         }
     }
 }
@@ -166,7 +196,9 @@ pub fn compute_graph_identity(graph: &PipelineGraph) -> String {
     let mut nodes: Vec<&GraphNode> = graph.nodes.iter().collect();
     nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
     let mut edges: Vec<&GraphEdge> = graph.edges.iter().collect();
-    edges.sort_by(|a, b| (a.from.as_str(), a.to.as_str()).cmp(&(b.from.as_str(), b.to.as_str())));
+    edges.sort_by(|a, b| {
+        (&a.from, &a.to, &a.from_port, &a.to_port).cmp(&(&b.from, &b.to, &b.from_port, &b.to_port))
+    });
 
     let mut hasher = blake3::Hasher::new();
     for node in &nodes {
@@ -185,8 +217,18 @@ pub fn compute_graph_identity(graph: &PipelineGraph) -> String {
     }
     for edge in &edges {
         hasher.update(edge.from.as_bytes());
+        // Ports enter the hash only when present, so legacy port-less
+        // graphs hash byte-identically to before (golden test).
+        if let Some(port) = &edge.from_port {
+            hasher.update(b":");
+            hasher.update(port.as_bytes());
+        }
         hasher.update(b"->");
         hasher.update(edge.to.as_bytes());
+        if let Some(port) = &edge.to_port {
+            hasher.update(b":");
+            hasher.update(port.as_bytes());
+        }
         hasher.update(b"\n");
     }
     hasher.finalize().to_hex().to_string()
@@ -211,7 +253,7 @@ pub fn compute_equivalence_key(
     target_node_id: &str,
     source_content_identity: &str,
 ) -> Result<String, PipelineSnapshotError> {
-    let chain = graph.chain_to(target_node_id)?;
+    let chain = graph.ancestors_of(target_node_id)?;
 
     let missing_seed: Vec<String> = chain
         .iter()
@@ -222,8 +264,31 @@ pub fn compute_equivalence_key(
         return Err(PipelineSnapshotError::MissingSeed(missing_seed));
     }
 
-    let mut content = source_content_identity.to_string();
-    for node in chain {
+    // Each node's content = H(type, version, params, input content, seed).
+    // A source node's input content is the source image identity; a
+    // single-input node's is its upstream's content (so legacy chains keep
+    // their exact keys); a multi-input node folds each `port=content` pair.
+    let mut contents: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
+    for node in &chain {
+        let inputs = graph.inputs_of(&node.node_id);
+        let input_content = match inputs.as_slice() {
+            [] => source_content_identity.to_string(),
+            [only] if only.to_port.is_none() && only.from_port.is_none() => {
+                contents[only.from.as_str()].clone()
+            }
+            many => many
+                .iter()
+                .map(|e| {
+                    format!(
+                        "{}={}@{}",
+                        e.to_port.as_deref().unwrap_or(""),
+                        contents[e.from.as_str()],
+                        e.from_port.as_deref().unwrap_or("")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(";"),
+        };
         let mut hasher = blake3::Hasher::new();
         hasher.update(node.node_type.as_bytes());
         hasher.update(b"\0");
@@ -231,14 +296,14 @@ pub fn compute_equivalence_key(
         hasher.update(b"\0");
         hasher.update(canonical_json(&node.canonical_parameters).as_bytes());
         hasher.update(b"\0");
-        hasher.update(content.as_bytes());
+        hasher.update(input_content.as_bytes());
         hasher.update(b"\0");
         if let Some(seed) = node.seed {
             hasher.update(&seed.to_le_bytes());
         }
-        content = hasher.finalize().to_hex().to_string();
+        contents.insert(node.node_id.as_str(), hasher.finalize().to_hex().to_string());
     }
-    Ok(content)
+    Ok(contents[target_node_id].clone())
 }
 
 #[cfg(test)]
@@ -262,6 +327,8 @@ mod tests {
             edges: vec![GraphEdge {
                 from: "source".into(),
                 to: "blur".into(),
+                from_port: None,
+                to_port: None,
             }],
         }
     }
@@ -341,5 +408,37 @@ mod tests {
         let a = compute_graph_identity(&linear_graph());
         let b = compute_graph_identity(&linear_graph());
         assert_eq!(pipeline_snapshot_id(&a), pipeline_snapshot_id(&b));
+    }
+
+    #[test]
+    fn multi_input_node_walks_all_ancestors_in_topological_order() {
+        let e = |from: &str, to: &str, tp: &str| GraphEdge {
+            from: from.into(),
+            to: to.into(),
+            from_port: Some("out".into()),
+            to_port: Some(tp.into()),
+        };
+        let graph = PipelineGraph {
+            nodes: vec![node("a", "source"), node("b", "source"), node("j", "join"), node("x", "other")],
+            edges: vec![e("a", "j", "left"), e("b", "j", "right")],
+        };
+        let ids: Vec<_> = graph.ancestors_of("j").unwrap().iter().map(|n| n.node_id.clone()).collect();
+        assert_eq!(ids, vec!["a", "b", "j"]);
+        assert!(compute_equivalence_key(&graph, "j", "img").is_ok());
+    }
+
+    #[test]
+    fn cycle_is_detected() {
+        let e = |from: &str, to: &str| GraphEdge {
+            from: from.into(),
+            to: to.into(),
+            from_port: None,
+            to_port: None,
+        };
+        let graph = PipelineGraph {
+            nodes: vec![node("a", "x"), node("b", "x")],
+            edges: vec![e("a", "b"), e("b", "a")],
+        };
+        assert_eq!(graph.ancestors_of("b").unwrap_err(), PipelineSnapshotError::Cycle);
     }
 }

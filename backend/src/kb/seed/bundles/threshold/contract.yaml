@@ -1,0 +1,44 @@
+schema: quantify-kb/1
+category: analysis
+purpose: Produce a binary mask from an intensity image.
+inputs:
+  - port_id: image
+    name: Image
+    artifact_kind: image2d
+    dtype: float32
+    unit: intensity
+    coordinate_space: image-pixel
+    calibration: none
+    multiplicity: { min: 1, max: 1 }
+    required: true
+outputs:
+  - port_id: mask
+    name: Mask
+    artifact_kind: mask2d
+    dtype: uint8
+    value_domain: [0, 1]
+    unit: none
+    coordinate_space: image-pixel
+    calibration: none
+    multiplicity: { min: 1, max: 1 }
+    same_source_as: [image]
+parameters:
+  - parameter_id: mode
+    type: enum
+    meaning: How the threshold is chosen.
+    allowed: [otsu, manual]
+    required: true
+    default: manual
+  - parameter_id: value
+    type: number
+    meaning: Manual threshold on the 0-255 scale.
+    range: { min: 0, max: 255 }
+    unit: intensity
+    required_if: { mode: manual }
+    default: 170
+  - parameter_id: invert
+    type: boolean
+    meaning: Swap foreground and background.
+    default: false
+prerequisites: []
+reproducibility: { deterministic: true, cacheable: true, needs_seed: false, external_state: [] }

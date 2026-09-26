@@ -1,0 +1,10 @@
+schema: quantify-kb/1
+nodes:
+  - instance_id: src
+    ref: { id: rosaray.image-source, version: 1.0.0 }
+  - instance_id: th
+    ref: { id: rosaray.threshold, version: 1.0.0 }
+    parameters: { mode: otsu }
+    layout: { x: 320, y: 120 }
+edges:
+  - { from: src.image, to: th.image }

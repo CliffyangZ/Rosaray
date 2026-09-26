@@ -1,6 +1,36 @@
 import {boxBlur,otsu,morph,components} from './algo.js';
 import {request,subscribeEvents} from './service_client.js';
 
+// ---- Node definitions from the knowledge base (feature 002, T050) ----------
+// The catalog is the source of truth for what nodes exist. `DEFS` below is the
+// prototype's legacy in-browser catalog and is kept only so the existing local
+// `exec` path keeps working until Preview moves to the service (T069).
+const kbDefs=new Map(); // `${id}@${version}` -> {id,version,name,summary,contract,maturity,...}
+let kbDefsLoad=null;
+
+/**
+ * Loads every published AlgoNode's definition (ports, parameters) from the
+ * service. Cached; pass `force` to refetch after the catalog changes.
+ * Resolves to an array of definitions, newest version last per id.
+ */
+export function loadNodeDefs(force){
+  if(kbDefsLoad&&!force)return kbDefsLoad;
+  kbDefsLoad=(async()=>{
+    const {entries}=await request('GET','/kb/entries?kind=algonode&status=published&limit=500');
+    const details=await Promise.all(entries.map(e=>request('GET',`/kb/algonode/${e.id}/${e.version}`).then(d=>({e,d})).catch(()=>null)));
+    kbDefs.clear();
+    for(const x of details){
+      if(!x||!x.d.contract)continue;
+      const {e,d}=x;
+      kbDefs.set(`${e.id}@${e.version}`,{id:e.id,version:e.version,name:e.name||e.id,summary:e.summary||'',domain:e.domain||null,maturity:e.maturity||null,availability:e.availability,contract:d.contract});
+    }
+    return [...kbDefs.values()].sort((a,b)=>a.name.localeCompare(b.name));
+  })().catch(err=>{kbDefsLoad=null;throw err});
+  return kbDefsLoad;
+}
+/** Cached definition for a node reference, or undefined if not loaded/unknown. */
+export const nodeDef=(id,version)=>kbDefs.get(`${id}@${version}`);
+
 export const DEFS={
   source:{label:'Image source',cat:'Data',in:null,out:'Image2D',params:[]},
   normalize:{label:'Normalize',cat:'Preprocess',in:'Image2D',out:'Image2D',params:[
@@ -28,6 +58,18 @@ export function exec(type,p,inp,ctx){
   if(type==='onnx')throw new Error('ONNX segmentation: no model asset attached. Import an .onnx model first (File → Import Model).');
   if(type==='area'){let n=0;for(const v of inp.d)n+=v;return{kind:'table',w:inp.w,h:inp.h,rows:{px:n,mm2:n*p.spacing*p.spacing,cc:components(inp.d,inp.w,inp.h)}}}
 }
+
+// ---- AlgoPipe draft Preview (feature 002, US4) -----------------------------
+// The service builds the graph from the draft at `revision`, runs the target's
+// ancestor cone through the trusted built-in executors, and labels the outcome
+// verified/unverified. Resolves to the raw contract body:
+//   {state:'ready',artifact_ref,verification_state,unverified_nodes,node_reuse,...}
+//   {state:'failed',failing_node_id,error,last_successful_artifact_ref,stale}
+// A 409 not_previewable rejects with ServiceError (details.nodes / .findings).
+export const previewPipe=(pipeId,revision,imageAssetId,targetNodeId,port)=>
+  request('POST','/preview',{pipe_id:pipeId,revision,image_asset_id:imageAssetId,target_node_id:targetNodeId,...(port?{port}:{})});
+export const previewStatus=(pipeId,revision)=>
+  request('GET',`/preview/status?pipe_id=${encodeURIComponent(pipeId)}${revision?`&revision=${encodeURIComponent(revision)}`:''}`);
 
 // ---- Preview request flow (User Story 3, contracts/local-service-api.md
 // §Preview, event-bus.md). The Local Rosaray Service owns content-

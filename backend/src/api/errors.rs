@@ -48,6 +48,122 @@ impl ServiceError {
     }
 }
 
+// ---- Feature 002 (contracts/kb-api.md §Additional conventions) -------------
+
+/// Error codes added by the knowledge-base API. Kept apart from `ALL_CODES`,
+/// which a test pins to feature 001's documented list.
+pub const KB_CODES: &[&str] = &[
+    "draft_conflict",
+    "identity_conflict",
+    "not_previewable",
+    "not_publishable",
+    "not_executable",
+    "verification_invalid",
+    "profile_unsatisfied",
+    "patient_data_blocked",
+    "unsupported_schema",
+    "published_immutable",
+    "bundle_invalid",
+    "authorization_required",
+    "clinical_claim_not_executable",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KbErrorCode {
+    DraftConflict,
+    IdentityConflict,
+    NotPreviewable,
+    NotPublishable,
+    NotExecutable,
+    VerificationInvalid,
+    ProfileUnsatisfied,
+    PatientDataBlocked,
+    UnsupportedSchema,
+    PublishedImmutable,
+    BundleInvalid,
+    AuthorizationRequired,
+    ClinicalClaimNotExecutable,
+}
+
+impl KbErrorCode {
+    pub fn code(&self) -> &'static str {
+        match self {
+            KbErrorCode::DraftConflict => "draft_conflict",
+            KbErrorCode::IdentityConflict => "identity_conflict",
+            KbErrorCode::NotPreviewable => "not_previewable",
+            KbErrorCode::NotPublishable => "not_publishable",
+            KbErrorCode::NotExecutable => "not_executable",
+            KbErrorCode::VerificationInvalid => "verification_invalid",
+            KbErrorCode::ProfileUnsatisfied => "profile_unsatisfied",
+            KbErrorCode::PatientDataBlocked => "patient_data_blocked",
+            KbErrorCode::UnsupportedSchema => "unsupported_schema",
+            KbErrorCode::PublishedImmutable => "published_immutable",
+            KbErrorCode::BundleInvalid => "bundle_invalid",
+            KbErrorCode::AuthorizationRequired => "authorization_required",
+            KbErrorCode::ClinicalClaimNotExecutable => "clinical_claim_not_executable",
+        }
+    }
+
+    pub fn http_status(&self) -> axum::http::StatusCode {
+        use axum::http::StatusCode;
+        match self {
+            KbErrorCode::DraftConflict
+            | KbErrorCode::IdentityConflict
+            | KbErrorCode::NotPreviewable
+            | KbErrorCode::NotExecutable
+            | KbErrorCode::VerificationInvalid
+            | KbErrorCode::PublishedImmutable => StatusCode::CONFLICT,
+            KbErrorCode::NotPublishable
+            | KbErrorCode::ProfileUnsatisfied
+            | KbErrorCode::PatientDataBlocked
+            | KbErrorCode::UnsupportedSchema
+            | KbErrorCode::AuthorizationRequired
+            | KbErrorCode::ClinicalClaimNotExecutable
+            | KbErrorCode::BundleInvalid => StatusCode::UNPROCESSABLE_ENTITY,
+        }
+    }
+}
+
+/// A knowledge-base API error: the contract envelope plus optional
+/// `details` (e.g. `findings[]` for `not_publishable`/`bundle_invalid`, or
+/// the on-disk revision for `draft_conflict`). Messages are generic and
+/// never carry file contents or patient details (FR-053).
+#[derive(Debug, Clone)]
+pub struct KbError {
+    pub code: KbErrorCode,
+    pub message: String,
+    pub details: Option<serde_json::Value>,
+}
+
+impl KbError {
+    pub fn new(code: KbErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            details: None,
+        }
+    }
+
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = Some(details);
+        self
+    }
+
+    pub fn body(&self) -> serde_json::Value {
+        let mut error = serde_json::json!({ "code": self.code.code(), "message": self.message });
+        if let Some(d) = &self.details {
+            error["details"] = d.clone();
+        }
+        serde_json::json!({ "error": error })
+    }
+}
+
+impl axum::response::IntoResponse for KbError {
+    fn into_response(self) -> axum::response::Response {
+        (self.code.http_status(), axum::Json(self.body())).into_response()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,6 +243,50 @@ mod tests {
         for e in every_variant() {
             let (_, status) = expected.iter().find(|(c, _)| *c == e.code()).unwrap();
             assert_eq!(e.http_status(), *status, "{}", e.code());
+        }
+    }
+
+    #[test]
+    fn kb_codes_have_the_documented_statuses() {
+        use KbErrorCode::*;
+        let expected = [
+            (DraftConflict, StatusCode::CONFLICT),
+            (IdentityConflict, StatusCode::CONFLICT),
+            (NotPreviewable, StatusCode::CONFLICT),
+            (NotPublishable, StatusCode::UNPROCESSABLE_ENTITY),
+            (NotExecutable, StatusCode::CONFLICT),
+            (VerificationInvalid, StatusCode::CONFLICT),
+            (ProfileUnsatisfied, StatusCode::UNPROCESSABLE_ENTITY),
+            (PatientDataBlocked, StatusCode::UNPROCESSABLE_ENTITY),
+            (UnsupportedSchema, StatusCode::UNPROCESSABLE_ENTITY),
+            (PublishedImmutable, StatusCode::CONFLICT),
+            (BundleInvalid, StatusCode::UNPROCESSABLE_ENTITY),
+            (AuthorizationRequired, StatusCode::UNPROCESSABLE_ENTITY),
+            (ClinicalClaimNotExecutable, StatusCode::UNPROCESSABLE_ENTITY),
+        ];
+        assert_eq!(expected.len(), KB_CODES.len());
+        for (code, status) in expected {
+            assert!(KB_CODES.contains(&code.code()), "{}", code.code());
+            assert_eq!(code.http_status(), status, "{}", code.code());
+        }
+    }
+
+    #[test]
+    fn kb_error_body_carries_details_only_when_given() {
+        let plain = KbError::new(KbErrorCode::PublishedImmutable, "published");
+        assert!(plain.body()["error"].get("details").is_none());
+        let rich = KbError::new(KbErrorCode::NotPublishable, "no")
+            .with_details(serde_json::json!({"findings": []}));
+        assert_eq!(rich.body()["error"]["details"]["findings"], serde_json::json!([]));
+        assert_eq!(rich.body()["error"]["code"], "not_publishable");
+    }
+
+    /// Every KB code is documented in contracts/kb-api.md.
+    #[test]
+    fn kb_contract_lists_every_kb_code() {
+        let contract = include_str!("../../../specs/002-paper-pipeline-designer/contracts/kb-api.md");
+        for code in KB_CODES {
+            assert!(contract.contains(&format!("`{code}`")), "{code} undocumented");
         }
     }
 

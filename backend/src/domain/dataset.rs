@@ -86,6 +86,39 @@ pub struct Dimensions {
     pub height: u32,
 }
 
+/// Physical size of one pixel, in millimetres (feature 002 amendment:
+/// calibration predicates need it, and a change to it is research-relevant,
+/// so it is a Dataset Version fingerprint input).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PixelSpacing {
+    pub x: f64,
+    pub y: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpacingSource {
+    Metadata,
+    UserEntered,
+}
+
+impl SpacingSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SpacingSource::Metadata => "metadata",
+            SpacingSource::UserEntered => "user_entered",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "metadata" => Some(SpacingSource::Metadata),
+            "user_entered" => Some(SpacingSource::UserEntered),
+            _ => None,
+        }
+    }
+}
+
 /// Stable identity independent of any `DatasetVersion` membership
 /// (data-model.md ImageAsset). The `external_source_uri` file is never
 /// copied — only linked (FR-002).
@@ -103,6 +136,12 @@ pub struct ImageAsset {
     pub split: Option<Split>,
     pub reference_mask_id: Option<Uuid>,
     pub metadata_status: MetadataStatus,
+    /// Absent unless the image carries (or the researcher supplied)
+    /// calibration; never guessed.
+    #[serde(default)]
+    pub pixel_spacing_mm: Option<PixelSpacing>,
+    #[serde(default)]
+    pub spacing_source: Option<SpacingSource>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

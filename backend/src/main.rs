@@ -46,6 +46,18 @@ async fn run(project_dir: PathBuf) {
     let blob_store =
         BlobStore::new(project_dir.join("blobs")).expect("failed to initialize blob store");
 
+    let kb_root = project_dir.join("knowledge-base");
+    rosaray_service::kb::ensure_layout(&kb_root).expect("failed to create knowledge-base folders");
+    {
+        // First start: seed an empty knowledge base with the built-in nodes.
+        // Later starts never reinstall or overwrite anything (T040).
+        let empty = rosaray_service::kb::catalog::scan::discover_bundle_dirs(&kb_root).is_empty();
+        if empty {
+            rosaray_service::kb::seed::install(&db, &kb_root).expect("failed to install seed knowledge bundles");
+        }
+        rosaray_service::kb::catalog::repo::refresh(&db, &kb_root, &mut |_| {}).expect("failed to index knowledge base");
+    }
+
     let session_token = generate_session_token();
     let (event_tx, _rx) = rosaray_service::events::new_channel();
 
@@ -58,12 +70,18 @@ async fn run(project_dir: PathBuf) {
         event_tx,
         project_id,
         exports_dir: project_dir.join("exports"),
+        kb_root,
         pending_batches: Default::default(),
         pending_batch_paths: Default::default(),
         artifact_registry: Default::default(),
         pending_requests: Default::default(),
         preview_cache: Default::default(),
         preview_isolation: Default::default(),
+        preview_nodes: Default::default(),
+        preview_board: Default::default(),
+        preview_delays: Default::default(),
+        extractions: Default::default(),
+        extraction_delay_ms: Default::default(),
     }));
 
     let router = rosaray_service::api::build_router(state);

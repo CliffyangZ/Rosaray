@@ -21,8 +21,19 @@ use crate::events::{Event, EventPayload};
 #[derive(Deserialize)]
 pub struct PreviewRequestBody {
     pub image_asset_id: Uuid,
-    pub pipeline_snapshot: PipelineGraph,
+    /// Legacy body: a graph sent inline.
+    #[serde(default)]
+    pub pipeline_snapshot: Option<PipelineGraph>,
     pub target_node_id: String,
+    /// Feature 002 body: an AlgoPipe draft at a revision (the service builds the graph).
+    #[serde(default)]
+    pub pipe_id: Option<String>,
+    #[serde(default)]
+    pub revision: Option<String>,
+    #[serde(default)]
+    pub dataset_version_id: Option<Uuid>,
+    #[serde(default)]
+    pub port: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -47,9 +58,29 @@ pub enum PreviewResponse {
     },
 }
 
+/// `POST /preview`: the legacy `pipeline_snapshot` body keeps working; a
+/// `pipe_id` body previews an AlgoPipe draft (contracts/kb-api.md §4).
 pub async fn post_preview(
     State(state): State<AppState>,
     Json(body): Json<PreviewRequestBody>,
+) -> Result<Json<serde_json::Value>, crate::api::kb::ApiError> {
+    if body.pipe_id.is_some() {
+        return crate::api::pipe_preview::post_pipe_preview(state, body).await;
+    }
+    let snapshot = body.pipeline_snapshot.clone().ok_or_else(|| {
+        crate::api::errors::KbError::new(
+            crate::api::errors::KbErrorCode::BundleInvalid,
+            "send either `pipeline_snapshot` or `pipe_id` with `revision`",
+        )
+    })?;
+    let response = legacy_preview(state, body, snapshot).await?;
+    Ok(Json(serde_json::to_value(response.0).expect("preview response serializes")))
+}
+
+async fn legacy_preview(
+    state: AppState,
+    body: PreviewRequestBody,
+    snapshot: PipelineGraph,
 ) -> Result<Json<PreviewResponse>, ServiceError> {
     let asset = {
         let db = state.db.lock().unwrap();
@@ -69,7 +100,7 @@ pub async fn post_preview(
     let req = PreviewRequest {
         image_asset_id: body.image_asset_id,
         source_content_identity: &asset.imported_content_identity,
-        graph: &body.pipeline_snapshot,
+        graph: &snapshot,
         target_node_id: &body.target_node_id,
     };
 
@@ -99,6 +130,10 @@ pub async fn post_preview(
                     image_asset_id: body.image_asset_id,
                     pipeline_snapshot_id: result.pipeline_snapshot_id,
                     target_node_id: body.target_node_id.clone(),
+                    pipe_id: None,
+                    revision: None,
+                    verification_state: None,
+                    unverified_nodes: None,
                 },
             ));
 
@@ -119,10 +154,14 @@ pub async fn post_preview(
                     image_asset_id: body.image_asset_id,
                     pipeline_snapshot_id: crate::domain::pipeline_snapshot::pipeline_snapshot_id(
                         &crate::domain::pipeline_snapshot::compute_graph_identity(
-                            &body.pipeline_snapshot,
+                            &snapshot,
                         ),
                     ),
                     target_node_id: body.target_node_id.clone(),
+                    pipe_id: None,
+                    revision: None,
+                    verification_state: None,
+                    unverified_nodes: None,
                 },
             ));
 
@@ -152,6 +191,8 @@ pub async fn post_preview(
 }
 
 pub fn router() -> axum::Router<AppState> {
-    use axum::routing::post;
-    axum::Router::new().route("/preview", post(post_preview))
+    use axum::routing::{get, post};
+    axum::Router::new()
+        .route("/preview", post(post_preview))
+        .route("/preview/status", get(crate::api::pipe_preview::get_preview_status))
 }

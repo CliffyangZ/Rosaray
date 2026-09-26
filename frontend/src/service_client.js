@@ -82,26 +82,31 @@ export async function request(method, path, body) {
   if (!response.ok) {
     let code = 'service_unavailable';
     let message = response.statusText;
+    let details;
     if (contentType.includes('application/json')) {
       try {
         const parsed = await response.json();
         code = parsed?.error?.code || code;
         message = parsed?.error?.message || message;
+        details = parsed?.error?.details;
       } catch {
         /* body wasn't the expected error shape; fall through with defaults */
       }
     }
-    throw new ServiceError(code, message, response.status);
+    throw new ServiceError(code, message, response.status, details);
   }
   if (contentType.includes('application/json')) return response.json();
   return response.blob();
 }
 
 export class ServiceError extends Error {
-  constructor(code, message, status) {
+  constructor(code, message, status, details) {
     super(message || code);
     this.code = code;
     this.status = status;
+    // Feature 002: e.g. `{ findings: [...] }` for not_publishable/bundle_invalid,
+    // or the on-disk revision for draft_conflict.
+    this.details = details;
   }
 }
 
@@ -139,6 +144,49 @@ export async function importBundle(file, credential) {
   form.append('bundle', file);
   form.append('credential', credential);
   return request('POST', '/export-bundles/import', form);
+}
+
+// ---- Read-only Knowledge Base queries ----
+
+const qs = (params) => {
+  const q = new URLSearchParams();
+  Object.entries(params || {}).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== '') q.set(k, v);
+  });
+  const text = q.toString();
+  return text ? `?${text}` : '';
+};
+
+export const kb = {
+  listEntries: (filters) => request('GET', `/kb/entries${qs(filters)}`),
+  getBundle: (kind, id, version) => request('GET', `/kb/${encodeURIComponent(kind)}/${encodeURIComponent(id)}/${encodeURIComponent(version)}`),
+  getDraft: (kind, id) => request('GET', `/kb/${encodeURIComponent(kind)}/${encodeURIComponent(id)}/draft`),
+};
+
+/** Event names added by feature 002 (contracts/events.md). */
+export const KB_EVENTS = Object.freeze([
+  'kb_scan_progress',
+  'kb_scan_complete',
+  'kb_bundle_changed_externally',
+  'extraction_progress',
+  'extraction_complete',
+  'extraction_cancelled',
+  'preview_stale',
+  'eligibility_changed',
+]);
+
+/**
+ * Subscribes to one or more Event Bus event types; returns an unsubscribe
+ * function. A client that misses an event recovers by re-issuing the matching
+ * Query (events.md), so handlers should treat events as hints.
+ */
+export function onEventType(types, handler) {
+  const wanted = new Set(Array.isArray(types) ? types : [types]);
+  const listener = (event) => {
+    if (wanted.has(event.type)) handler(event.payload, event);
+  };
+  eventListeners.add(listener);
+  return () => eventListeners.delete(listener);
 }
 
 function wsUrl(port, token) {

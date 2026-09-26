@@ -14,6 +14,11 @@ pub struct FingerprintInput {
     pub patient_id: Option<String>,
     pub split: Option<String>,
     pub reference_mask_content_identity: Option<String>,
+    /// Calibration is research-relevant (feature 002): a change yields a new
+    /// Dataset Version. `None` adds nothing to the hash, so fingerprints of
+    /// uncalibrated data are byte-identical to before (Constitution II).
+    pub pixel_spacing_mm: Option<(f64, f64)>,
+    pub spacing_source: Option<String>,
 }
 
 impl FingerprintInput {
@@ -23,6 +28,8 @@ impl FingerprintInput {
             patient_id: asset.patient_id.clone(),
             split: asset.split.map(|s| s.as_str().to_string()),
             reference_mask_content_identity: mask_content_identity,
+            pixel_spacing_mm: asset.pixel_spacing_mm.map(|p| (p.x, p.y)),
+            spacing_source: asset.spacing_source.map(|s| s.as_str().to_string()),
         }
     }
 }
@@ -47,6 +54,12 @@ pub fn compute_fingerprint(mut inputs: Vec<FingerprintInput>) -> String {
                 .unwrap_or("")
                 .as_bytes(),
         );
+        if let Some((x, y)) = input.pixel_spacing_mm {
+            hasher.update(b"\0spacing\0");
+            hasher.update(&x.to_le_bytes());
+            hasher.update(&y.to_le_bytes());
+            hasher.update(input.spacing_source.as_deref().unwrap_or("").as_bytes());
+        }
         hasher.update(b"\n");
     }
     hasher.finalize().to_hex().to_string()
@@ -93,7 +106,34 @@ mod tests {
             patient_id: Some(patient.into()),
             split: Some(split.into()),
             reference_mask_content_identity: None,
+            pixel_spacing_mm: None,
+            spacing_source: None,
         }
+    }
+
+    #[test]
+    fn absent_spacing_leaves_existing_fingerprints_unchanged() {
+        // The pre-feature-002 hash layout, reproduced by hand (T021).
+        let fp = compute_fingerprint(vec![input("img1", "p1", "train")]);
+        let mut legacy = blake3::Hasher::new();
+        legacy.update(b"img1\0p1\0train\0\n");
+        assert_eq!(fp, legacy.finalize().to_hex().to_string());
+    }
+
+    #[test]
+    fn changing_spacing_changes_the_fingerprint() {
+        let base = compute_fingerprint(vec![input("img1", "p1", "train")]);
+        let with = |x: f64, y: f64, src: &str| {
+            let mut i = input("img1", "p1", "train");
+            i.pixel_spacing_mm = Some((x, y));
+            i.spacing_source = Some(src.into());
+            compute_fingerprint(vec![i])
+        };
+        let a = with(0.05, 0.05, "metadata");
+        assert_ne!(a, base);
+        assert_ne!(a, with(0.06, 0.05, "metadata"));
+        assert_ne!(a, with(0.05, 0.05, "user_entered"));
+        assert_eq!(a, with(0.05, 0.05, "metadata"));
     }
 
     #[test]

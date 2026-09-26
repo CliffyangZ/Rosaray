@@ -8,17 +8,15 @@
   <a href="https://cliffyangz.github.io/Rosaray/"><img src="https://img.shields.io/badge/docs-Rosaray-ea7233?logo=readthedocs&logoColor=white&label=docs" alt="Rosaray docs"></a>
 </p>
 
-Rosaray 是一個以瀏覽器為介面的本機優先（local-first）口內影像研究工作站，協助研究者匯入口內照片、組合影像處理流程、觀察分割結果，並記錄可重現的實驗指標。
-
-目前專案聚焦於「影像分析研究工作流」的前端原型，尚未連接正式後端、雲端儲存或臨床診斷服務。Rosaray 僅供研究與展示使用，不能取代醫師判讀或作為醫療診斷依據。
+Rosaray 正重構為本機優先的量化知識庫（QKB）：後端建立並驗證可執行的 AlgoNode／AlgoPipe，System One Model 查詢方法契約並回報選用結果，前端只顯示唯讀演算法目錄。Rosaray 僅供研究與展示使用，不能取代醫師判讀或作為醫療診斷依據。
 
 ## Current status
 
-目前以 Rust 開發後端的 Data Layer 與前端的交互運作。
+目前程式仍包含舊的影像研究工作站與 Data Layer 功能；QKB 重構尚未實作完成。現行產品方向見 [憲章 2.0.0](.specify/memory/constitution.md) 與 [QKB／System One 規格](specs/003-qkb-system-one-core/spec.md)。以下啟動方式及實驗操作描述現存的舊版原型，並非重構完成後的產品介面。
 
-## Introduction
+## Legacy prototype
 
-Rosaray 的目標是把醫療影像分析所需的工作集中在同一個研究介面中：
+舊版原型把醫療影像分析工作集中在同一個研究介面中：
 
 - 以影像檢視器查看原始影像、處理後影像與 mask overlay。
 - 以可視化 pipeline 組合前處理、分割與量化步驟。
@@ -74,7 +72,7 @@ npm run preview
 
 若要測試自己的影像，可使用 **File → Import Image…**。匯入影像會先轉為灰階；新匯入的影像沒有 reference mask，因此無法計算 Dice，且 patient ID 與 dataset split 需要後續確認。
 
-## Features
+## Legacy prototype features
 
 ### Image workspace
 
@@ -108,6 +106,19 @@ npm run preview
 - 以 dataset fingerprint 辨識資料集設定變更。
 - Validation 面板檢查 patient 是否跨 split、reference mask 是否配對，以及 pipeline 是否有效。
 - 對缺少 patient ID 的匯入影像顯示提醒。
+
+## QKB refactor target
+
+- `backend/QKB/` will own method creation, validation, fixed versions,
+  dependencies, the catalog, and the versioned System One selection protocol.
+- QKB will retain only currently executable methods. Invalid versions, drafts,
+  and dependent pipes that lose executability will be permanently deleted;
+  selection records will keep the identity and contract needed for audit.
+- The frontend will contain only a read-only catalog of backend methods.
+  Dataset, Preview, Analysis, Run, visual design, and paper review flows will
+  be retired.
+- Existing Dataset and Run files will remain untouched for retrieval with
+  legacy tools. This refactor does not make them available in the new product.
 
 ## License
 

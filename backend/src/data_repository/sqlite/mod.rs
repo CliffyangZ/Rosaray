@@ -1,5 +1,7 @@
 pub mod dataset_repo;
 pub mod housekeeping_repo;
+pub mod kb_event_repo;
+pub mod paper_repo;
 pub mod run_repo;
 pub mod thumbnail_repo;
 
@@ -31,6 +33,22 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0006_export_bundles",
         include_str!("migrations/0006_export_bundles.sql"),
+    ),
+    (
+        "0007_knowledge_base",
+        include_str!("migrations/0007_knowledge_base.sql"),
+    ),
+    (
+        "0008_kb_status",
+        include_str!("migrations/0008_kb_status.sql"),
+    ),
+    (
+        "0009_kb_origin",
+        include_str!("migrations/0009_kb_origin.sql"),
+    ),
+    (
+        "0010_kb_amendments",
+        include_str!("migrations/0010_kb_amendments.sql"),
     ),
 ];
 

@@ -13,6 +13,9 @@ use rosaray_service::data_repository::sqlite;
 pub struct TestService {
     pub base_url: String,
     pub session_token: String,
+    /// The service's own state, so tests can reach its database and KB folders.
+    pub state: AppState,
+    pub kb_root: std::path::PathBuf,
     _project_dir: tempfile::TempDir,
     _server: tokio::task::JoinHandle<()>,
 }
@@ -30,6 +33,9 @@ pub async fn spawn() -> TestService {
     let blob_store = BlobStore::new(project_dir.path().join("blobs"))
         .expect("failed to initialize test blob store");
 
+    let kb_root = project_dir.path().join("knowledge-base");
+    rosaray_service::kb::ensure_layout(&kb_root).expect("failed to create knowledge-base folders");
+
     let session_token = "test-session-token".to_string();
     let (event_tx, _rx) = rosaray_service::events::new_channel();
 
@@ -42,15 +48,21 @@ pub async fn spawn() -> TestService {
         event_tx,
         project_id,
         exports_dir: project_dir.path().join("exports"),
+        kb_root: kb_root.clone(),
         pending_batches: Default::default(),
         pending_batch_paths: Default::default(),
         artifact_registry: Default::default(),
         pending_requests: Default::default(),
         preview_cache: Default::default(),
         preview_isolation: Default::default(),
+        preview_nodes: Default::default(),
+        preview_board: Default::default(),
+        preview_delays: Default::default(),
+        extractions: Default::default(),
+        extraction_delay_ms: Default::default(),
     }));
 
-    let router = rosaray_service::api::build_router(state);
+    let router = rosaray_service::api::build_router(state.clone());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -66,12 +78,19 @@ pub async fn spawn() -> TestService {
     TestService {
         base_url: format!("http://127.0.0.1:{port}"),
         session_token,
+        state,
+        kb_root,
         _project_dir: project_dir,
         _server: server,
     }
 }
 
 impl TestService {
+    /// The service's temp project directory (blobs, database, knowledge base).
+    pub fn _project_dir_path(&self) -> std::path::PathBuf {
+        self._project_dir.path().to_path_buf()
+    }
+
     pub fn client(&self) -> reqwest::Client {
         reqwest::Client::new()
     }
@@ -203,5 +222,187 @@ impl TestService {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         panic!("run {run_id} never left `running`");
+    }
+}
+
+// ---- Knowledge-base helpers (feature 002, T005) ----
+
+/// A fresh, empty `knowledge-base/` root inside a temp dir. Keep the returned
+/// `TempDir` alive for the duration of the test; the root is `<tmp>/knowledge-base`.
+#[allow(dead_code)]
+pub fn kb_root() -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().expect("failed to create temp kb dir");
+    let root = dir.path().join("knowledge-base");
+    rosaray_service::kb::ensure_layout(&root).expect("failed to create kb layout");
+    (dir, root)
+}
+
+/// Writes `files` (relative path → contents) under `dir`, creating parent dirs.
+#[allow(dead_code)]
+pub fn write_bundle(dir: &std::path::Path, files: &[(&str, &str)]) {
+    for (rel, contents) in files {
+        let path = dir.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).expect("failed to create bundle dir");
+        std::fs::write(path, contents).expect("failed to write bundle file");
+    }
+}
+
+/// BLAKE3 over every file under `dir` as sorted `(relative_path, file_hash)`
+/// pairs — used for "published bundles unchanged" assertions.
+#[allow(dead_code)]
+pub fn hash_tree(dir: &std::path::Path) -> String {
+    fn walk(base: &std::path::Path, cur: &std::path::Path, out: &mut Vec<(String, String)>) {
+        let mut entries: Vec<_> = std::fs::read_dir(cur)
+            .expect("failed to read dir")
+            .map(|e| e.unwrap().path())
+            .collect();
+        entries.sort();
+        for p in entries {
+            if p.is_dir() {
+                walk(base, &p, out);
+            } else {
+                let rel = p.strip_prefix(base).unwrap().to_string_lossy().replace('\\', "/");
+                let h = blake3::hash(&std::fs::read(&p).expect("failed to read file"));
+                out.push((rel, h.to_hex().to_string()));
+            }
+        }
+    }
+    let mut pairs = Vec::new();
+    walk(dir, dir, &mut pairs);
+    let mut hasher = blake3::Hasher::new();
+    for (rel, h) in pairs {
+        hasher.update(rel.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(h.as_bytes());
+        hasher.update(b"\n");
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
+// ---- Knowledge-base test support (feature 002) ------------------------------
+
+#[allow(dead_code)]
+pub fn fixture_dir(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/kb").join(name)
+}
+
+#[allow(dead_code)]
+pub fn copy_dir(src: &std::path::Path, dst: &std::path::Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for entry in std::fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let to = dst.join(entry.file_name());
+        if entry.path().is_dir() {
+            copy_dir(&entry.path(), &to);
+        } else {
+            std::fs::copy(entry.path(), to).unwrap();
+        }
+    }
+}
+
+/// Writes a *published* bundle (files + a correct `bundle.lock`) directly,
+/// bypassing the publish workflow, and returns its `content_id`. For building
+/// scenarios the workflow cannot yet (or should not) produce.
+#[allow(dead_code)]
+pub fn make_published_bundle(
+    root: &std::path::Path,
+    kind: &str,
+    id: &str,
+    version: &str,
+    release_kind: &str,
+    files: &[(&str, &str)],
+) -> String {
+    let sub = if kind == "algopipe" { "pipes" } else { "nodes" };
+    let dir = root.join(sub).join(id).join(version);
+    write_bundle(&dir, files);
+    let hashes = rosaray_service::kb::identity::file_hashes(&dir).unwrap();
+    let content_id = rosaray_service::kb::identity::content_id_of(hashes.iter().map(|(p, h)| (p.as_str(), h.as_str())));
+    let mut lock = format!(
+        "schema: quantify-kb/1\nid: {id}\nversion: {version}\ncontent_id: \"{content_id}\"\nrelease_kind: {release_kind}\nfiles:\n"
+    );
+    for (p, h) in &hashes {
+        lock.push_str(&format!("  - {{ path: {p}, blake3: \"{}\" }}\n", h.trim_start_matches("b3:")));
+    }
+    std::fs::write(dir.join("bundle.lock"), lock).unwrap();
+    content_id
+}
+
+/// A tiny grayscale PNG whose pixels depend on `px` (distinct bytes per value).
+#[allow(dead_code)]
+pub fn png_bytes(px: u8) -> Vec<u8> {
+    let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_pixel(6, 6, image::Luma([px])));
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+    out.into_inner()
+}
+
+#[allow(dead_code)]
+impl TestService {
+    /// Installs the six seed nodes (as a fresh service would on first start).
+    pub fn install_seeds(&self) -> usize {
+        let db = self.state.db.lock().unwrap();
+        rosaray_service::kb::seed::install(&db, &self.kb_root).unwrap()
+    }
+
+    /// Incremental catalog refresh, as `POST /kb/refresh` does.
+    pub fn refresh_catalog(&self) {
+        let db = self.state.db.lock().unwrap();
+        rosaray_service::kb::catalog::repo::refresh(&db, &self.kb_root, &mut |_| {}).unwrap();
+    }
+
+    pub async fn entries(&self, query: &str) -> Vec<serde_json::Value> {
+        let (status, body) = self.json(reqwest::Method::GET, &format!("/kb/entries{query}"), None).await;
+        assert_eq!(status, 200, "{body}");
+        body["entries"].as_array().unwrap().clone()
+    }
+
+    /// `content_id` of a published bundle, straight from the catalog.
+    pub fn content_id_of_published(&self, id: &str, version: &str) -> String {
+        let db = self.state.db.lock().unwrap();
+        db.query_row(
+            "SELECT content_id FROM kb_catalog_entry WHERE id = ?1 AND version = ?2 AND status = 'published'",
+            [id, version],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    pub async fn upload_algobundle(&self, bytes: Vec<u8>) -> (reqwest::StatusCode, serde_json::Value) {
+        let part = reqwest::multipart::Part::bytes(bytes).file_name("x.algobundle");
+        let form = reqwest::multipart::Form::new().part("bundle", part);
+        let resp = self
+            .request(reqwest::Method::POST, "/kb/import")
+            .multipart(form)
+            .send()
+            .await
+            .unwrap();
+        let status = resp.status();
+        (status, resp.json().await.unwrap_or(serde_json::Value::Null))
+    }
+
+    /// Creates a draft from a fixture folder through the API (create + save).
+    pub async fn create_draft_from_fixture(&self, kind: &str, id: &str, fixture: &str) -> String {
+        let (status, created) = self
+            .json(reqwest::Method::POST, &format!("/kb/{kind}/drafts"), Some(serde_json::json!({ "id": id })))
+            .await;
+        assert_eq!(status, 201, "{created}");
+        let mut files = serde_json::Map::new();
+        let dir = fixture_dir(fixture);
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let entry = entry.unwrap();
+            files.insert(
+                entry.file_name().to_string_lossy().to_string(),
+                serde_json::Value::String(std::fs::read_to_string(entry.path()).unwrap()),
+            );
+        }
+        let (status, saved) = self
+            .json(
+                reqwest::Method::PUT,
+                &format!("/kb/{kind}/drafts/{id}"),
+                Some(serde_json::json!({ "base_revision": created["revision"], "files": files })),
+            )
+            .await;
+        assert_eq!(status, 200, "{saved}");
+        saved["revision"].as_str().unwrap().to_string()
     }
 }
