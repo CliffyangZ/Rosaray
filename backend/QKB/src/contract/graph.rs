@@ -12,8 +12,8 @@ use super::compat::check_ports;
 use super::contract::value_is_allowed;
 use super::domain_rules::rules_for;
 use super::finding::{BundleRef, Finding, Severity, Subject, SubjectType};
-use crate::kb::bundle::model::{Contract, GraphFile, NodeInstance, Parameter, Port, TargetDataProfile};
-use crate::kb::identity::split_endpoint;
+use crate::bundle::model::{Contract, GraphFile, NodeInstance, Parameter, Port, TargetDataProfile};
+use crate::identity::split_endpoint;
 
 /// What the validator needs to know about a referenced node version.
 #[derive(Debug, Clone)]
@@ -381,7 +381,7 @@ fn source_findings(
     out
 }
 
-fn prerequisite_declared(pre: &crate::kb::bundle::model::Predicate, profile: Option<&TargetDataProfile>) -> bool {
+fn prerequisite_declared(pre: &crate::bundle::model::Predicate, profile: Option<&TargetDataProfile>) -> bool {
     let Some(profile) = profile else { return false };
     profile.require.iter().any(|req| {
         req.predicate == pre.predicate

@@ -71,12 +71,10 @@ pub fn list(conn: &Connection, filter: &EventFilter) -> rusqlite::Result<Vec<KbE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::MasterKey;
 
     fn db() -> (tempfile::TempDir, Connection) {
         let dir = tempfile::tempdir().unwrap();
-        let key = MasterKey::derive("pw", &crate::crypto::generate_salt()).unwrap();
-        let conn = crate::data_repository::sqlite::open(&dir.path().join("t.sqlite3"), &key).unwrap();
+        let conn = crate::store::open(&dir.path().join("t.sqlite3")).unwrap();
         (dir, conn)
     }
 

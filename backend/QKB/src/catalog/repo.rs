@@ -9,8 +9,7 @@ use rusqlite::{params, Connection};
 use super::scan::{
     discover_bundle_dirs, signature_with_chains, rel_path, scan_bundle, DirSignature, EntryStatus, ScanEntry, ScanEvent,
 };
-use crate::designer::validate::finding::{BundleRef, Finding, Severity, Subject, SubjectType};
-use crate::kb::bundle::draft::revision_of;
+use crate::contract::finding::{BundleRef, Finding, Severity, Subject, SubjectType};
 
 pub fn upsert_entry(conn: &Connection, e: &ScanEntry) -> rusqlite::Result<()> {
     remove_path(conn, &e.path)?;
@@ -125,10 +124,6 @@ pub struct RefreshOutcome {
     pub scanned: u64,
     pub indexed: u64,
     pub invalid: u64,
-    /// `(kind, id, on_disk_revision)` for every open draft whose files changed
-    /// since the revision it was opened at (`kb_bundle_changed_externally`).
-    #[serde(skip)]
-    pub externally_changed_drafts: Vec<(String, String, String)>,
 }
 
 /// Incremental refresh: re-reads only bundles whose `(mtime, size)` moved,
@@ -186,7 +181,6 @@ pub fn refresh(
         scanned: total,
         indexed: total,
         invalid,
-        externally_changed_drafts: changed_drafts(conn, root)?,
     })
 }
 
@@ -198,44 +192,6 @@ pub fn rebuild(
 ) -> rusqlite::Result<RefreshOutcome> {
     clear_derived(conn)?;
     refresh(conn, root, progress)
-}
-
-fn changed_drafts(conn: &Connection, root: &Path) -> rusqlite::Result<Vec<(String, String, String)>> {
-    let mut stmt = conn.prepare("SELECT kind, id, base_revision FROM kb_draft_session")?;
-    let sessions: Vec<(String, String, String)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-        .collect::<Result<_, _>>()?;
-    let mut out = Vec::new();
-    for (kind, id, base) in sessions {
-        let dir = draft_dir(root, &kind, &id);
-        if let Ok(rev) = revision_of(&dir) {
-            if rev != base {
-                out.push((kind, id, rev));
-            }
-        }
-    }
-    Ok(out)
-}
-
-/// `drafts/nodes/<id>` or `drafts/pipes/<id>`.
-pub fn draft_dir(root: &Path, kind: &str, id: &str) -> std::path::PathBuf {
-    let sub = if kind == "algopipe" { "pipes" } else { "nodes" };
-    root.join("drafts").join(sub).join(id)
-}
-
-/// Remembers the revision an open draft was read/saved at.
-pub fn record_draft_session(conn: &Connection, kind: &str, id: &str, revision: &str) -> rusqlite::Result<()> {
-    conn.execute(
-        "INSERT INTO kb_draft_session (draft_key, kind, id, base_revision, opened_at) VALUES (?1,?2,?3,?4,?5)
-         ON CONFLICT(draft_key) DO UPDATE SET base_revision = excluded.base_revision, opened_at = excluded.opened_at",
-        params![format!("{kind}:{id}"), kind, id, revision, chrono::Utc::now().to_rfc3339()],
-    )?;
-    Ok(())
-}
-
-pub fn forget_draft_session(conn: &Connection, kind: &str, id: &str) -> rusqlite::Result<()> {
-    conn.execute("DELETE FROM kb_draft_session WHERE draft_key = ?1", [format!("{kind}:{id}")])?;
-    Ok(())
 }
 
 /// Resolves every recorded dependency against published catalog rows by
@@ -307,8 +263,8 @@ pub fn resolve_dependencies(conn: &Connection, root: &Path) -> rusqlite::Result<
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
         .collect::<Result<_, _>>()?;
     for (path, id, version, to_id, to_version) in deprecated {
-        let state = crate::kb::evidence::deprecation::read(root, &to_id, &to_version)
-            .map(|c| crate::kb::evidence::deprecation::state_of(&c))
+        let state = crate::evidence::deprecation::read(root, &to_id, &to_version)
+            .map(|c| crate::evidence::deprecation::state_of(&c))
             .unwrap_or_default();
         let replacement = state
             .replacement

@@ -1,0 +1,5 @@
+numpy>=1.26
+opencv-python-headless>=4.9
+# Only for SAM segmentation (mask source); weights go in <Rosaray>/model/
+torch>=2.2
+segment-anything @ git+https://github.com/facebookresearch/segment-anything.git

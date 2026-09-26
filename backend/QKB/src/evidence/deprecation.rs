@@ -33,7 +33,7 @@ pub fn deprecate(
             kind: KIND.to_string(),
             subject: json!({ "id": id, "version": version }),
             reason: Some(reason.to_string()),
-            author: crate::data_repository::sqlite::kb_event_repo::LOCAL_ACTOR.to_string(),
+            author: crate::event_repo::LOCAL_ACTOR.to_string(),
             extra,
         },
     )

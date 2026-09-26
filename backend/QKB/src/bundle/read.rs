@@ -10,8 +10,8 @@ use super::frontmatter::{parse_header, Header};
 use super::model::{
     parse_yaml, BundleLock, Contract, EvidenceRecord, GraphFile, Implementation, Kind,
 };
-use crate::designer::validate::finding::{BundleRef, Finding, Severity, Subject};
-use crate::kb::identity::{content_id_of, file_hashes};
+use crate::contract::finding::{BundleRef, Finding, Severity, Subject};
+use crate::identity::{content_id_of, file_hashes};
 
 pub const LOCK_FILE: &str = "bundle.lock";
 

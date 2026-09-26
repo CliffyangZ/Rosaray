@@ -3,10 +3,10 @@
 
 use super::contract::validate_contract;
 use super::finding::{BundleRef, Finding, Severity, Subject, SubjectType};
-use crate::kb::bundle::model::Kind;
-use crate::kb::bundle::read::Bundle;
-use crate::kb::bundle::write::check_relative;
-use crate::kb::identity::{is_valid_id, is_valid_version, validate_identity};
+use crate::bundle::model::Kind;
+use crate::bundle::read::Bundle;
+use crate::bundle::write::check_relative;
+use crate::identity::{is_valid_id, is_valid_version, validate_identity};
 
 /// What a resolver knows about a referenced `id@version`.
 #[derive(Debug, Clone)]

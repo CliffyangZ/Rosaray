@@ -5,8 +5,8 @@
 use std::collections::HashSet;
 
 use super::finding::{BundleRef, Finding, Severity, Subject, SubjectType};
-use crate::kb::bundle::model::{Contract, Parameter, Port};
-use crate::kb::profile::is_known_predicate;
+use crate::bundle::model::{Contract, Parameter, Port};
+use crate::profile::is_known_predicate;
 
 pub fn validate_contract(bundle: &BundleRef, c: &Contract) -> Vec<Finding> {
     let mut out = Vec::new();
@@ -212,7 +212,7 @@ pub fn value_is_allowed(p: &Parameter, value: &serde_json::Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kb::bundle::model::parse_yaml;
+    use crate::bundle::model::parse_yaml;
 
     fn check(yaml: &str) -> Vec<String> {
         let c: Contract = parse_yaml(yaml).unwrap();

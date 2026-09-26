@@ -8,8 +8,8 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use super::{effective_parameters, validate_outputs, ExecContext, Inputs, NodeError, Outputs, Registry};
-use crate::kb::bundle::model::{Contract, GraphFile};
-use crate::kb::identity::split_endpoint;
+use crate::bundle::model::{Contract, GraphFile};
+use crate::identity::split_endpoint;
 
 /// Executes `instance` of `graph`: gathers its inputs from `results` (the
 /// already-computed upstream outputs), runs its built-in executor, and checks

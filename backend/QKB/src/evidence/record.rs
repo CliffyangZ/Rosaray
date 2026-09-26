@@ -4,9 +4,9 @@
 
 use serde::Serialize;
 
-use crate::designer::validate::finding::{Finding, Severity, Subject};
-use crate::kb::bundle::model::{EvidenceRecord, EvidenceType};
-use crate::kb::bundle::read::Bundle;
+use crate::contract::finding::{Finding, Severity, Subject};
+use crate::bundle::model::{EvidenceRecord, EvidenceType};
+use crate::bundle::read::Bundle;
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct EvidenceGroups {

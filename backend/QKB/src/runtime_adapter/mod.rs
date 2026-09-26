@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
-use crate::kb::bundle::model::Contract;
+use crate::bundle::model::Contract;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImageF32 {
@@ -62,30 +62,6 @@ impl Artifact {
             other => Err(NodeError::new("wrong_input_kind", format!("expected a mask but received {}", other.kind_str()))),
         }
     }
-
-    /// Bytes for display/download: 8-bit grayscale PNG for images and masks,
-    /// JSON for tables. (Lossless values are kept in memory by the caller; this
-    /// is only the viewable form.)
-    pub fn display_bytes(&self) -> (Vec<u8>, crate::domain::ArtifactKind) {
-        match self {
-            Artifact::Image(i) => {
-                let px: Vec<u8> = i.data.iter().map(|v| v.clamp(0.0, 255.0).round() as u8).collect();
-                (encode_png(i.w, i.h, px), crate::domain::ArtifactKind::Image)
-            }
-            Artifact::Mask(m) => {
-                let px: Vec<u8> = m.data.iter().map(|v| if *v != 0 { 255 } else { 0 }).collect();
-                (encode_png(m.w, m.h, px), crate::domain::ArtifactKind::Mask)
-            }
-            Artifact::Table(rows) => (serde_json::to_vec(rows).expect("table serializes"), crate::domain::ArtifactKind::Measurement),
-        }
-    }
-}
-
-fn encode_png(w: usize, h: usize, px: Vec<u8>) -> Vec<u8> {
-    let img = image::GrayImage::from_raw(w as u32, h as u32, px).expect("pixel buffer matches dimensions");
-    let mut out = std::io::Cursor::new(Vec::new());
-    image::DynamicImage::ImageLuma8(img).write_to(&mut out, image::ImageFormat::Png).expect("PNG encoding in memory cannot fail");
-    out.into_inner()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -230,7 +206,7 @@ mod tests {
     #[test]
     fn registry_resolves_exactly_the_ids_the_catalog_treats_as_implemented() {
         let registry = Registry::builtin();
-        let mut catalog: Vec<&str> = crate::kb::catalog::status::BUILTIN_IMPLEMENTATIONS.to_vec();
+        let mut catalog: Vec<&str> = crate::catalog::status::BUILTIN_IMPLEMENTATIONS.to_vec();
         catalog.sort();
         assert_eq!(registry.ids(), catalog);
         assert!(registry.resolve("builtin.onnx").is_none());
@@ -239,7 +215,7 @@ mod tests {
 
     #[test]
     fn outputs_are_checked_against_the_declared_contract() {
-        let contract: Contract = crate::kb::bundle::model::parse_yaml(
+        let contract: Contract = crate::bundle::model::parse_yaml(
             "outputs:\n  - { port_id: mask, artifact_kind: mask2d, unit: none }\n",
         )
         .unwrap();

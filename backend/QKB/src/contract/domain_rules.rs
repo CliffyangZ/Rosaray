@@ -3,7 +3,7 @@
 //! dental-image rule set lives here; another domain simply registers others.
 
 use super::finding::{BundleRef, Finding, Severity, Subject};
-use crate::kb::bundle::model::GraphFile;
+use crate::bundle::model::GraphFile;
 
 pub trait DomainRule {
     fn check(&self, bundle: &BundleRef, graph: &GraphFile) -> Vec<Finding>;

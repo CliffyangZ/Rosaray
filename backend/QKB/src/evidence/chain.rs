@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::designer::validate::finding::{BundleRef, Finding, Severity, Subject};
-use crate::kb::bundle::model::{parse_yaml, to_yaml};
+use crate::contract::finding::{BundleRef, Finding, Severity, Subject};
+use crate::bundle::model::{parse_yaml, to_yaml};
 
 /// Serializes appends in this process so two writers cannot pick one `seq`.
 static APPEND_LOCK: Mutex<()> = Mutex::new(());

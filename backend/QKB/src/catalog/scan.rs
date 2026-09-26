@@ -7,10 +7,10 @@
 use std::path::{Path, PathBuf};
 
 use super::status::derive;
-use crate::designer::validate::bundle::{validate_bundle, BundleCheck};
-use crate::designer::validate::finding::{BundleRef, Finding, Severity, Subject};
-use crate::kb::bundle::model::Kind;
-use crate::kb::bundle::read::{read_bundle, Bundle};
+use crate::contract::bundle::{validate_bundle, BundleCheck};
+use crate::contract::finding::{BundleRef, Finding, Severity, Subject};
+use crate::bundle::model::Kind;
+use crate::bundle::read::{read_bundle, Bundle};
 
 /// Top-level folders that hold history chains, not bundles.
 const NON_BUNDLE_ROOTS: &[&str] = &["amendments", "verification"];
@@ -165,7 +165,7 @@ pub fn signature_with_chains(root: &Path, dir: &Path, id: Option<&str>, version:
         fold(dir_signature(&root.join("verification").join(id)));
     }
     // A local trust decision changes maturity without touching the bundle.
-    if let Ok(meta) = std::fs::metadata(root.join(crate::kb::trust::TRUST_FILE)) {
+    if let Ok(meta) = std::fs::metadata(root.join(crate::trust::TRUST_FILE)) {
         let mtime = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as i64).unwrap_or(0);
         fold(DirSignature { mtime_ms: mtime, size: meta.len() });
     }
@@ -308,7 +308,7 @@ pub fn scan_bundle(root: &Path, dir: &Path) -> ScanEntry {
 /// against the versions it depends on, so a reader of the pipe sees them (FR-051).
 fn amendment_count(root: &Path, bundle: &Bundle) -> i64 {
     let count = |id: &str, version: &str| {
-        crate::kb::evidence::deprecation::read(root, id, version).map(|c| c.records.iter().filter(|r| r.kind != crate::kb::evidence::deprecation::KIND).count() as i64).unwrap_or(0)
+        crate::evidence::deprecation::read(root, id, version).map(|c| c.records.iter().filter(|r| r.kind != crate::evidence::deprecation::KIND).count() as i64).unwrap_or(0)
     };
     let mut n = if bundle.is_published() { count(&bundle.header.id, &bundle.header.version) } else { 0 };
     if let Some(g) = &bundle.graph {

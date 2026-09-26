@@ -10,12 +10,12 @@ use rusqlite::Connection;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::kb::bundle::model::Trust;
-use crate::kb::bundle::read::{read_bundle, Bundle};
-use crate::kb::catalog::query::path_of;
-use crate::kb::catalog::status::{derive, is_resolvable_implementation};
-use crate::kb::evidence::verification::{status_for, Status, Subject, VerificationType};
-use crate::kb::profile::{evaluate_profile, unmet_prerequisites, ImageFacts};
+use crate::bundle::model::Trust;
+use crate::bundle::read::{read_bundle, Bundle};
+use crate::catalog::query::path_of;
+use crate::catalog::status::{derive, is_resolvable_implementation};
+use crate::evidence::verification::{status_for, Status, Subject, VerificationType};
+use crate::profile::{evaluate_profile, unmet_prerequisites, ImageFacts};
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Reason {
@@ -31,18 +31,18 @@ pub struct Reason {
 }
 
 impl Reason {
-    fn new(code: &'static str) -> Self {
+    pub fn new(code: &'static str) -> Self {
         Self { code, node: None, predicate: None, detail: None }
     }
-    fn node(mut self, n: &str) -> Self {
+    pub fn node(mut self, n: &str) -> Self {
         self.node = Some(n.to_string());
         self
     }
-    fn predicate(mut self, p: &str) -> Self {
+    pub fn predicate(mut self, p: &str) -> Self {
         self.predicate = Some(p.to_string());
         self
     }
-    fn detail(mut self, d: Value) -> Self {
+    pub fn detail(mut self, d: Value) -> Self {
         self.detail = Some(d);
         self
     }
@@ -55,7 +55,7 @@ pub struct Eligibility {
 }
 
 impl Eligibility {
-    fn from(reasons: Vec<Reason>) -> Self {
+    pub fn from(reasons: Vec<Reason>) -> Self {
         Self { eligible: reasons.is_empty(), reasons }
     }
     pub fn codes(&self) -> Vec<&'static str> {
@@ -129,67 +129,32 @@ pub fn dataset_independent(conn: &Connection, root: &Path, pipe: &Bundle) -> Eli
     Eligibility::from(reasons)
 }
 
-/// Full eligibility for one dataset: the dataset-independent part plus the
-/// pipe's Target Data Profile and every node's prerequisites, evaluated against
-/// each image of the Dataset Version.
-pub fn eligibility(conn: &Connection, root: &Path, pipe: &Bundle, images: &[ImageFacts]) -> Eligibility {
-    let mut base = dataset_independent(conn, root, pipe);
-    if base.reasons.iter().any(|r| r.code == "not_executable_release") {
-        return base;
-    }
-    let Some(graph) = &pipe.graph else { return base };
+/// Applicability of an executable pipe to *declared* data conditions: the pipe's
+/// Target Data Profile and every node's prerequisites evaluated against `facts`.
+/// This never affects whether the pipe is retained (constitution III) — it only
+/// says whether the pipe fits one query.
+pub fn applicability(conn: &Connection, root: &Path, pipe: &Bundle, facts: &ImageFacts) -> Vec<Reason> {
+    let images = std::slice::from_ref(facts);
+    let mut reasons: Vec<Reason> = Vec::new();
+    let Some(graph) = &pipe.graph else { return reasons };
     if let Some(profile) = &graph.target_data_profile {
         let eval = evaluate_profile(profile.require.iter().map(|p| (p.predicate.as_str(), &p.args)), images);
         for u in eval.unsatisfied {
-            base.reasons.push(Reason::new("profile_unsatisfied").predicate(&u.predicate).detail(json!({
-                "expected": u.expected, "observed": u.observed, "failing_images": u.failing_images, "total_images": u.total_images,
+            reasons.push(Reason::new("profile_unsatisfied").predicate(&u.predicate).detail(json!({
+                "expected": u.expected, "observed": u.observed,
             })));
         }
     }
     for n in &graph.nodes {
         let Some(path) = path_of(conn, "algonode", &n.node_ref.id, &n.node_ref.version, "published").ok().flatten() else { continue };
         let Some(contract) = read_bundle(&root.join(path)).0.and_then(|b| b.contract) else { continue };
-        for facts in images {
-            let unmet = unmet_prerequisites(contract.prerequisites.iter().map(|p| (p.predicate.as_str(), &p.args)), facts);
-            for u in unmet {
-                let r = Reason::new("prerequisite_unmet").node(&n.instance_id).predicate(&u.predicate).detail(json!({ "expected": u.expected, "observed": u.observed }));
-                if !base.reasons.contains(&r) {
-                    base.reasons.push(r);
-                }
+        let unmet = unmet_prerequisites(contract.prerequisites.iter().map(|p| (p.predicate.as_str(), &p.args)), facts);
+        for u in unmet {
+            let r = Reason::new("prerequisite_unmet").node(&n.instance_id).predicate(&u.predicate).detail(json!({ "expected": u.expected, "observed": u.observed }));
+            if !reasons.contains(&r) {
+                reasons.push(r);
             }
         }
     }
-    base.eligible = base.reasons.is_empty();
-    base
-}
-
-/// Published executable pipes that (directly) reference node `id`, for
-/// recomputing their eligibility when that node's history changes (FR-052).
-pub fn executable_pipes_using(conn: &Connection, node_id: &str) -> rusqlite::Result<Vec<(String, String)>> {
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT p.id, p.version FROM kb_dependency d JOIN kb_catalog_entry p ON p.path = d.from_path
-         WHERE d.to_id = ?1 AND p.status = 'published' AND p.kind = 'algopipe' AND p.release_kind = 'executable'
-         ORDER BY p.id, p.version",
-    )?;
-    let rows = stmt.query_map([node_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
-    rows.collect()
-}
-
-/// Dataset-independent eligibility of each executable pipe using `node_id`,
-/// keyed by `id@version` — captured before and after a history write.
-pub fn snapshot_for_node(conn: &Connection, root: &Path, node_id: &str) -> Vec<((String, String), Eligibility)> {
-    executable_pipes_using(conn, node_id)
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|(id, ver)| load_pipe(conn, root, &id, &ver).map(|b| ((id, ver), dataset_independent(conn, root, &b))))
-        .collect()
-}
-
-/// Pipes whose derived eligibility differs between two snapshots.
-pub fn changes(before: &[((String, String), Eligibility)], after: &[((String, String), Eligibility)]) -> Vec<((String, String), Eligibility)> {
-    after
-        .iter()
-        .filter(|(k, e)| before.iter().find(|(bk, _)| bk == k).is_none_or(|(_, b)| b != e))
-        .cloned()
-        .collect()
+    reasons
 }

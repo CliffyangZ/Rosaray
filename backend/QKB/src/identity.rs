@@ -8,9 +8,9 @@ use std::sync::OnceLock;
 use regex::Regex;
 use serde_json::Value;
 
-use crate::designer::validate::finding::{BundleRef, Finding, Severity, Subject};
-use crate::domain::pipeline_snapshot::{compute_graph_identity, GraphEdge, GraphNode, PipelineGraph};
-use crate::kb::bundle::model::GraphFile;
+use crate::contract::finding::{BundleRef, Finding, Severity, Subject};
+use crate::graph_identity::{compute_graph_identity, GraphEdge, GraphNode, PipelineGraph};
+use crate::bundle::model::GraphFile;
 
 const ID_PATTERN: &str = r"^[a-z][a-z0-9]*(\.[a-z0-9-]+)+$";
 
@@ -242,7 +242,7 @@ pub fn split_endpoint(endpoint: &str) -> (String, Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kb::bundle::model::{GraphFile, NodeInstance, NodeRef, Pin};
+    use crate::bundle::model::{GraphFile, NodeInstance, NodeRef, Pin};
     use serde_json::json;
 
     #[test]
@@ -305,7 +305,7 @@ mod tests {
                     label: None,
                 },
             ],
-            edges: vec![crate::kb::bundle::model::Edge { from: "src.image".into(), to: "th.image".into() }],
+            edges: vec![crate::bundle::model::Edge { from: "src.image".into(), to: "th.image".into() }],
             target_data_profile: None,
             implementation_pins: vec![],
         }

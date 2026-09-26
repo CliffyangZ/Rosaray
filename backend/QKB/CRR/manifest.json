@@ -1,0 +1,268 @@
+{
+  "schema": "rosaray.qkb.algorithms/1",
+  "algorithms": [
+    {
+      "id": "rosaray.crr.mask-geometry",
+      "name": "CRR 冠根比（mask 幾何）",
+      "version": "0.1.0",
+      "language": "python",
+      "package": "backend/QKB/CRR/crr",
+      "evidence_type": "crr",
+      "summary": "僅由單顆牙齒的 segmentation mask，推算牙冠與牙根沿長軸的長度與冠根比。",
+      "intended_use": "作為與專家 CEJ／根尖標註比較前的純幾何基準線，觀察演算法行為並挑出需要優化的案例。",
+      "method": [
+        "PCA：對 mask 前景像素取最大變異方向為牙齒長軸。",
+        "寬度輪廓：沿長軸切成 n_bins 段，量測每段垂直於長軸的寬度，並做移動平均。",
+        "頸部：在寬度輪廓上找左右都比它寬的局部最小值，以相對凹陷深度過濾；取最深者為頸部（≈CEJ）。單調收尖的形狀不會被誤判，找不到時不硬給比例。",
+        "冠／根方向：兩端平均寬度較小的一端為根尖，另一端為牙冠端。",
+        "長度與比例：沿長軸計算頸部到兩端的距離，ratio = 牙冠長度 ÷ 牙根長度。"
+      ],
+      "inputs": [
+        {
+          "name": "mask",
+          "type": "2-D 陣列（H×W，可轉 bool）",
+          "required": true,
+          "description": "前景為單一目標牙齒。多牙或雜訊請先清理（crr.masks.postprocess_mask：最大連通區 + 5×5 closing）。"
+        },
+        {
+          "name": "params",
+          "type": "CrrParams",
+          "required": false,
+          "description": "見下方參數表。"
+        }
+      ],
+      "mask_sources": [
+        {
+          "id": "coco",
+          "label": "COCO json",
+          "entry": "load_coco_mask(coco_path, file_name)",
+          "note": "polygon 與 uncompressed RLE"
+        },
+        {
+          "id": "png",
+          "label": "二值 mask PNG",
+          "entry": "load_mask_png(path)",
+          "note": "像素 > 127 為前景"
+        },
+        {
+          "id": "sam",
+          "label": "SAM ViT-B",
+          "entry": "SamSegmenter().segment(rgb)",
+          "note": "權重放在 Rosaray/model/sam/；需 torch 與 segment-anything"
+        }
+      ],
+      "params": [
+        {
+          "name": "n_bins",
+          "default": 100,
+          "constraint": "≥ 10",
+          "description": "沿長軸切分的段數"
+        },
+        {
+          "name": "smooth_window",
+          "default": 5,
+          "constraint": "≥ 1",
+          "description": "寬度輪廓的移動平均視窗"
+        },
+        {
+          "name": "edge_buffer_bins",
+          "default": 3,
+          "constraint": "≥ 1 且 < n_bins / 2",
+          "description": "頸部搜尋時兩端排除的段數；也用來判斷哪一端是根尖"
+        },
+        {
+          "name": "min_prominence_frac",
+          "default": 0.04,
+          "constraint": "[0, 1)",
+          "description": "頸部凹陷的最小相對深度，低於此值視為找不到頸部"
+        },
+        {
+          "name": "min_mask_pixels",
+          "default": 100,
+          "constraint": "≥ 3",
+          "description": "mask 最少像素數，少於此值回報 invalid_mask"
+        },
+        {
+          "name": "pixel_spacing_mm",
+          "default": null,
+          "constraint": "> 0，可為 null",
+          "description": "像素間距（mm）；提供後才會輸出 *_mm 指標"
+        }
+      ],
+      "outputs": {
+        "schema": "rosaray.crr.measurement/1",
+        "metrics": [
+          {
+            "key": "ratio",
+            "unit": "—",
+            "description": "牙冠長度 ÷ 牙根長度",
+            "when": "status = ok"
+          },
+          {
+            "key": "crown_length_px",
+            "unit": "px",
+            "description": "沿長軸，牙冠端到頸部的長度",
+            "when": "status = ok"
+          },
+          {
+            "key": "root_length_px",
+            "unit": "px",
+            "description": "沿長軸，頸部到根尖的長度",
+            "when": "status = ok"
+          },
+          {
+            "key": "crown_fraction",
+            "unit": "0–1",
+            "description": "牙冠 ÷ (牙冠 + 牙根)",
+            "when": "status = ok"
+          },
+          {
+            "key": "neck_width_px",
+            "unit": "px",
+            "description": "頸部處垂直於長軸的寬度",
+            "when": "status = ok"
+          },
+          {
+            "key": "neck_width_rel",
+            "unit": "0–1",
+            "description": "頸部寬度 ÷ 最大寬度",
+            "when": "status = ok"
+          },
+          {
+            "key": "neck_prominence",
+            "unit": "0–1",
+            "description": "頸部凹陷的相對深度（信心參考）",
+            "when": "status = ok"
+          },
+          {
+            "key": "tooth_length_px",
+            "unit": "px",
+            "description": "牙齒沿長軸的全長",
+            "when": "mask 有效"
+          },
+          {
+            "key": "max_width_px",
+            "unit": "px",
+            "description": "平滑後寬度輪廓的最大值",
+            "when": "mask 有效"
+          },
+          {
+            "key": "n_neck_candidates",
+            "unit": "個",
+            "description": "通過前的局部最小值個數",
+            "when": "mask 有效"
+          },
+          {
+            "key": "axis_angle_deg",
+            "unit": "°",
+            "description": "長軸與 +x 的夾角（影像座標，0–180）",
+            "when": "mask 有效"
+          },
+          {
+            "key": "centroid",
+            "unit": "px [x,y]",
+            "description": "mask 重心",
+            "when": "mask 有效"
+          },
+          {
+            "key": "mask_area_px",
+            "unit": "px²",
+            "description": "前景像素數",
+            "when": "一律"
+          },
+          {
+            "key": "pixel_spacing_mm",
+            "unit": "mm/px",
+            "description": "使用者提供的像素間距",
+            "when": "提供 pixel_spacing_mm 時"
+          },
+          {
+            "key": "crown_length_mm",
+            "unit": "mm",
+            "description": "牙冠長度（mm）",
+            "when": "提供 pixel_spacing_mm 時"
+          },
+          {
+            "key": "root_length_mm",
+            "unit": "mm",
+            "description": "牙根長度（mm）",
+            "when": "提供 pixel_spacing_mm 時"
+          },
+          {
+            "key": "tooth_length_mm",
+            "unit": "mm",
+            "description": "牙齒全長（mm）",
+            "when": "提供 pixel_spacing_mm 時"
+          },
+          {
+            "key": "max_width_mm",
+            "unit": "mm",
+            "description": "最大寬度（mm）",
+            "when": "提供 pixel_spacing_mm 時"
+          },
+          {
+            "key": "neck_width_mm",
+            "unit": "mm",
+            "description": "頸部寬度（mm）",
+            "when": "提供 pixel_spacing_mm 時"
+          }
+        ],
+        "geometry": [
+          "axis_origin",
+          "axis_direction",
+          "axis_extent",
+          "crown_tip",
+          "root_apex",
+          "neck",
+          "neck_line"
+        ],
+        "profile": [
+          "t",
+          "width",
+          "width_smooth",
+          "neck_index",
+          "crown_end_index"
+        ],
+        "report_extras": [
+          "report_schema",
+          "image",
+          "bbox_xyxy",
+          "contour",
+          "provenance"
+        ]
+      },
+      "statuses": [
+        {
+          "code": "ok",
+          "description": "找到頸部並回報 ratio。"
+        },
+        {
+          "code": "neck_not_found",
+          "description": "沒有局部最小值達到 min_prominence_frac（或牙根長度為 0）；不回報 ratio。"
+        },
+        {
+          "code": "invalid_mask",
+          "description": "mask 面積小於 min_mask_pixels。"
+        }
+      ],
+      "evidence_layers": [
+        "Segmentation",
+        "Bounding box",
+        "長軸",
+        "冠 / 根 / 頸部"
+      ],
+      "usage": {
+        "python": "from crr import measure_crr, CrrParams\nm = measure_crr(mask, CrrParams())\nm.to_dict()",
+        "cli": "python -m crr measure --image 1.png --coco coco_annotations.json --out 1.crr.json"
+      },
+      "limitations": [
+        "純幾何近似，不是臨床 CRR。",
+        "多根牙、影像遮蔽、鄰牙沾黏會讓頸部落錯位置。",
+        "SAM mask 為 pseudo-label，邊界誤差會直接進入 ratio；真實影像上常把鄰近骨組織一併框入。",
+        "預設單位為像素；未提供 pixel_spacing_mm 時不換算 mm。",
+        "只供觀察演算法行為與挑選待優化案例，不可作為醫學結論。"
+      ],
+      "spec": "backend/QKB/CRR/Algorithm.md"
+    }
+  ]
+}

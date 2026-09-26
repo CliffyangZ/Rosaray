@@ -5,12 +5,12 @@
 
 use std::path::Path;
 
-use crate::designer::validate::finding::{Finding, Severity, Subject as FSubject};
-use crate::kb::bundle::model::{Kind, Trust};
-use crate::kb::bundle::read::Bundle;
-use crate::kb::evidence::deprecation::{self, DeprecationState};
-use crate::kb::evidence::verification::{self, Status, Subject, VerificationType};
-use crate::kb::trust::effective_trust;
+use crate::contract::finding::{Finding, Severity, Subject as FSubject};
+use crate::bundle::model::{Kind, Trust};
+use crate::bundle::read::Bundle;
+use crate::evidence::deprecation::{self, DeprecationState};
+use crate::evidence::verification::{self, Status, Subject, VerificationType};
+use crate::trust::effective_trust;
 
 pub const SPECIFICATION_ONLY: &str = "specification_only";
 pub const IMPLEMENTED: &str = "implemented";

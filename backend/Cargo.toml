@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "QKB"]
+
 [package]
 name = "rosaray-service"
 version = "0.1.0"
@@ -12,30 +15,17 @@ name = "rosaray_service"
 path = "src/lib.rs"
 
 [dependencies]
-axum = { version = "0.7", features = ["ws", "multipart"] }
-tokio = { version = "1", features = ["full"] }
-rusqlite = { version = "0.31", features = ["bundled-sqlcipher-vendored-openssl"] }
-image = "0.25"
-blake3 = "1"
-aes-gcm = "0.10"
-argon2 = "0.5"
+rosaray-qkb = { path = "QKB" }
+axum = { version = "0.7", default-features = false, features = ["http1", "json", "query", "tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-uuid = { version = "1", features = ["v4", "v5", "serde"] }
-thiserror = "1"
-rand = "0.8"
 tower-http = { version = "0.5", features = ["cors"] }
-futures-util = "0.3"
+rusqlite = { version = "0.31", features = ["bundled"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 base64 = "0.22"
-# YAML: serde_yaml is archived/unmaintained; serde_yaml_ng is the maintained drop-in fork (T001 decision)
-serde_yaml_ng = "0.10"
-semver = { version = "1", features = ["serde"] }
-zip = { version = "2", default-features = false, features = ["deflate"] }
-regex = "1"
-lopdf = "0.34"
-pdf-extract = "0.7"
 
 [dev-dependencies]
 tempfile = "3"
-reqwest = { version = "0.12", features = ["json", "multipart"] }
+reqwest = { version = "0.12", features = ["json"] }
+blake3 = "1"

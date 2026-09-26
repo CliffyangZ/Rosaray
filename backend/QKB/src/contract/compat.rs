@@ -3,7 +3,7 @@
 //! property, the edge is reported. Two sides that both omit a property (data
 //! that has no such notion, e.g. a scalar with no coordinate space) agree.
 
-use crate::kb::bundle::model::Port;
+use crate::bundle::model::Port;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Incompatibility {

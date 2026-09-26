@@ -1,125 +1,59 @@
 # Rosaray
 
-<p align="center">
-  <a href=".github/icon.png"><img src=".github/icon.png" alt="Rosaray icon" width="160"></a>
-</p>
+Local-first research software built around two knowledge bases — a
+**Quantitative Knowledge Base (QKB)** of Python measurement algorithms and a
+**Pathology Knowledge Base (KB)** — a local **System One** model (Laya) that
+selects measurement algorithms and scores pathology candidates, a
+**research-only pathology inference** flow with mandatory human review, and a
+read-only frontend workspace. Research use only; nothing here is a diagnosis,
+and model scores are unverified and are not disease probabilities.
 
-<p align="center">
-  <a href="https://cliffyangz.github.io/Rosaray/"><img src="https://img.shields.io/badge/docs-Rosaray-ea7233?logo=readthedocs&logoColor=white&label=docs" alt="Rosaray docs"></a>
-</p>
+Principles: [.specify/memory/constitution.md](.specify/memory/constitution.md) (3.0.0) ·
+Active spec: [specs/004-pathology-kb-laya-inference/](specs/004-pathology-kb-laya-inference/)
 
-Rosaray 正重構為本機優先的量化知識庫（QKB）：後端建立並驗證可執行的 AlgoNode／AlgoPipe，System One Model 查詢方法契約並回報選用結果，前端只顯示唯讀演算法目錄。Rosaray 僅供研究與展示使用，不能取代醫師判讀或作為醫療診斷依據。
+> **Status**: constitution 3.0.0 is ratified; the code is mid-migration. The
+> Rust crate still lives in `backend/QKB/` and QKB is still AlgoNode/AlgoPipe
+> based (spec 003) until spec 004 FR-023 lands. The Python CRR algorithm and
+> the frontend workspace already follow the new layout.
 
-## Current status
+## Layout
 
-目前程式仍包含舊的影像研究工作站與 Data Layer 功能；QKB 重構尚未實作完成。現行產品方向見 [憲章 2.0.0](.specify/memory/constitution.md) 與 [QKB／System One 規格](specs/003-qkb-system-one-core/spec.md)。以下啟動方式及實驗操作描述現存的舊版原型，並非重構完成後的產品介面。
+| Path | What |
+| --- | --- |
+| `backend/QKB/` | target: Python measurement algorithms only (today `CRR/`). Also still holds the Rust crate `rosaray-qkb` (bundles, executability, catalog, System One protocol) that spec 004 moves to `backend/src/` |
+| `backend/src/` | crate `rosaray-service`: thin HTTP layer (`/qkb/v1/*`); target home of the whole Rust service |
+| `backend/KB/` | target: pathology knowledge entries (spec 004) |
+| `model/` | local model weights, not tracked (see `model/README.md`) |
+| `frontend/` | read-only workspace: Explorer, Evidence (CRR overlay), pathology inference view, Knowledge base dialog (Cmd/Ctrl+K) |
+| `docs/legacy-retrieval.md` | how to read old Dataset/Run files |
 
-## Legacy prototype
-
-舊版原型把醫療影像分析工作集中在同一個研究介面中：
-
-- 以影像檢視器查看原始影像、處理後影像與 mask overlay。
-- 以可視化 pipeline 組合前處理、分割與量化步驟。
-- 以 metrics、run history 與 validation 面板檢查結果及資料集狀態。
-- 保留資料集 fingerprint、pipeline graph、參數與執行時間，方便比較不同實驗設定。
-
-工作站預設不載入任何影像。可從已連線的本機服務選擇資料集影像，或匯入 PNG、JPEG 影像進行測試。
-
-## Getting Started
-
-### Requirements
-
-- Node.js 20.19+（Vite 7 的執行需求）
-- npm
-
-### Install and run
-
-可直接從專案根目錄執行啟動腳本；它會在首次使用時安裝相依套件、啟動本機後端服務並開啟已連線的瀏覽器工作站：
+## Run
 
 ```bash
-./scripts/launch.sh
+cd backend && cargo run -- --project-dir ./rosaray-project
+# prints {"port":…,"session_token":…}; author / System One credentials are
+# owner-only files in ./rosaray-project/qkb-credentials/
+cd frontend && npm install && npm run dev
+# open http://localhost:5173/?rosarayPort=<port>&rosaraySession=<session_token>
+cargo test --workspace   # from backend/
+scripts/check-frontend-readonly.sh
 ```
 
-腳本會要求設定 Rosaray 專案密碼，用於加密本機儲存的資料；請在每次開啟同一個專案時輸入相同密碼。若要在非互動環境啟動，請先設定 `ROSARAY_PASSPHRASE`。
+## Behaviour in one paragraph (current Rust QKB, spec 003)
 
-或手動啟動：
+Authors submit complete AlgoNode/AlgoPipe bundles; a version is stored only if
+it is currently executable (resolvable, trusted implementation, technical
+verification produced by running the node's own tests, pinned dependencies).
+There are no drafts. Whenever executability can change, every version that is
+no longer executable — and every pipe depending on it — is permanently
+deleted, with a deletion record. System One queries for candidate
+AlgoPipes and reports a selection or abstention; the QKB validates it against
+that query's candidate set and current eligibility and records it
+idempotently. The frontend can only read.
 
-在專案根目錄執行：
+## Legacy data
 
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-接著開啟終端機輸出的本機網址，通常是 `http://localhost:5173`。
-
-### Build and preview
-
-```bash
-cd frontend
-npm run build
-npm run preview
-```
-
-### First experiment
-
-1. 開啟工作站後，從左側 Explorer 匯入影像，或從 Dataset 選擇本機服務中的影像。
-2. 在右側 Pipeline 檢查預設流程：`Image source → Normalize → Gaussian blur → Threshold → Morphology → Area measurement`。
-3. 在 Inspector 調整節點參數，或從 Algorithms 拖曳新的節點到 pipeline。
-4. 按下 **Run pipeline**（`⌘/Ctrl + Enter`）。
-5. 在中央檢視器切換 **Input**、**Output** 與 **Overlay**，並在下方查看 Metrics、Run history 與 Validation。
-
-若要測試自己的影像，可使用 **File → Import Image…**。匯入影像會先轉為灰階；新匯入的影像沒有 reference mask，因此無法計算 Dice，且 patient ID 與 dataset split 需要後續確認。
-
-## Legacy prototype features
-
-### Image workspace
-
-- 預設為空白工作區；可載入本機服務中的資料集影像或匯入 PNG、JPEG。
-- 支援 PNG、JPEG 匯入。
-- 支援影像分頁、縮放、平移、Fit to window 與 1:1 檢視。
-- 可切換原始影像、pipeline 輸出與預測 mask overlay。
-
-### Visual pipeline
-
-- 以節點方式建立影像處理流程，並透過 typed ports 連接節點。
-- 支援 pipeline 驗證：檢查影像型別是否相容、是否存在 cycle，以及是否有唯一的 Image source。
-- 可調整下列節點：
-  - **Normalize**：依百分位數拉伸影像強度。
-  - **Gaussian blur**：降低影像雜訊。
-  - **Threshold**：使用 manual 或 Otsu threshold 產生 mask。
-  - **Morphology**：執行 open、close、erode 或 dilate。
-  - **Area measurement**：計算前景像素、面積與連通元件數。
-  - **ONNX segmentation**：保留模型節點介面，模型載入目前仍未完成。
-
-### Metrics and experiment tracking
-
-- 計算 Dice（僅在影像具有 reference mask 時）。
-- 顯示估算面積（mm²）、前景像素數、連通元件數與各步驟執行時間。
-- Run history 保存 run ID、影像、Dice、面積、dataset fingerprint、pipeline graph hash、seed 與執行時間。
-- 每次執行會產生一筆可比較的 run snapshot。
-
-### Dataset and validation
-
-- Dataset 面板顯示影像的 patient、split 與 reference mask 配對狀態。
-- 以 dataset fingerprint 辨識資料集設定變更。
-- Validation 面板檢查 patient 是否跨 split、reference mask 是否配對，以及 pipeline 是否有效。
-- 對缺少 patient ID 的匯入影像顯示提醒。
-
-## QKB refactor target
-
-- `backend/QKB/` will own method creation, validation, fixed versions,
-  dependencies, the catalog, and the versioned System One selection protocol.
-- QKB will retain only currently executable methods. Invalid versions, drafts,
-  and dependent pipes that lose executability will be permanently deleted;
-  selection records will keep the identity and contract needed for audit.
-- The frontend will contain only a read-only catalog of backend methods.
-  Dataset, Preview, Analysis, Run, visual design, and paper review flows will
-  be retired.
-- Existing Dataset and Run files will remain untouched for retrieval with
-  legacy tools. This refactor does not make them available in the new product.
-
-## License
-
-License 尚未設定。
+Dataset, Preview, Run, paper-review and browser-side designer flows were
+retired. Existing project files (`rosaray.sqlite3*`, `blobs/`, `project.*`)
+are never opened or modified; retrieve them with the `legacy-prototype` git
+tag — see [docs/legacy-retrieval.md](docs/legacy-retrieval.md).

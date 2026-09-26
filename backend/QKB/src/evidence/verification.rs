@@ -99,7 +99,7 @@ pub fn record_event(
             kind: event.as_str().to_string(),
             subject: serde_json::to_value(subject.clone().normalized()).expect("subject serializes"),
             reason,
-            author: crate::data_repository::sqlite::kb_event_repo::LOCAL_ACTOR.to_string(),
+            author: crate::event_repo::LOCAL_ACTOR.to_string(),
             extra,
         },
     )

@@ -1,8 +1,7 @@
 //! Bundle file IO: frontmatter, typed machine files, reader, atomic writer,
-//! draft compare-and-swap.
-pub mod draft;
+//! published-version index.
 pub mod frontmatter;
+pub mod index;
 pub mod model;
 pub mod read;
-pub mod service;
 pub mod write;

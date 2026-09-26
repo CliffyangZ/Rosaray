@@ -19,13 +19,29 @@ use rusqlite::Connection;
 use super::bundle::{validate_bundle, BundleCheck};
 use super::finding::{Finding, Severity, Subject, SubjectType};
 use super::graph::{validate_graph, GraphInput};
-use crate::kb::bundle::model::{Pin, Trust};
-use crate::kb::bundle::read::{read_bundle, Bundle};
-use crate::kb::catalog::query::{path_of, CatalogDefinitions, CatalogResolver};
-use crate::kb::catalog::status::{derive, verification_subject};
-use crate::kb::evidence::verification::Status;
-use crate::kb::profile::is_known_predicate;
-use crate::kb::publish::Release;
+use crate::bundle::model::{Pin, Trust};
+use crate::bundle::read::{read_bundle, Bundle};
+use crate::catalog::query::{path_of, CatalogDefinitions, CatalogResolver};
+use crate::catalog::status::{derive, verification_subject};
+use crate::evidence::verification::Status;
+use crate::profile::is_known_predicate;
+
+/// Whether a pipe version is published as knowledge only or as executable.
+/// QKB only retains executable pipes; the knowledge release is rejected on submit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Release {
+    Knowledge,
+    Executable,
+}
+
+impl Release {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Release::Knowledge => "knowledge",
+            Release::Executable => "executable",
+        }
+    }
+}
 
 pub const DISCLOSURE_DATASET_VALIDATION_MISSING: &str = "dataset_validation_missing";
 

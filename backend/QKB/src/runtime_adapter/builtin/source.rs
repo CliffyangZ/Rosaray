@@ -27,7 +27,7 @@ impl NodeExecutor for ImageSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::designer::runtime_adapter::ImageF32;
+    use crate::runtime_adapter::ImageF32;
     use std::sync::Arc;
 
     #[test]

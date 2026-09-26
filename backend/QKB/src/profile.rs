@@ -7,7 +7,6 @@
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 
-use crate::domain::dataset::ImageAsset;
 
 /// The closed predicate vocabulary shared by Target Data Profiles and node
 /// prerequisites.
@@ -27,7 +26,7 @@ pub fn is_known_predicate(name: &str) -> bool {
     PREDICATES.contains(&name)
 }
 
-/// What is actually known about one Image Asset.
+/// What is declared about the data a method would be applied to.
 #[derive(Debug, Clone, Default)]
 pub struct ImageFacts {
     pub format: Option<String>,
@@ -38,26 +37,6 @@ pub struct ImageFacts {
     pub color_mode: Option<String>,
     pub modality: Option<String>,
     pub coordinate_space: Option<String>,
-}
-
-impl ImageFacts {
-    /// Facts derivable from an Image Asset. Version 1 handles intraoral
-    /// photographs in image-pixel space only; colour mode is not recorded on the
-    /// asset, so it stays unknown.
-    pub fn from_asset(asset: &ImageAsset) -> Self {
-        let ext = asset.external_source_uri.rsplit('.').next().map(|e| e.to_ascii_lowercase());
-        let format = ext.map(|e| if e == "jpg" { "jpeg".to_string() } else { e });
-        Self {
-            format,
-            width: asset.dimensions.width,
-            height: asset.dimensions.height,
-            pixel_spacing_mm: asset.pixel_spacing_mm.map(|p| (p.x, p.y)),
-            mask_present: asset.reference_mask_id.is_some(),
-            color_mode: None,
-            modality: Some("intraoral-photo".to_string()),
-            coordinate_space: Some("image-pixel".to_string()),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]

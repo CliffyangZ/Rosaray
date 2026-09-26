@@ -16,11 +16,14 @@ pub struct EntryFilter {
     pub availability: Option<String>,
     pub verification: Option<String>,
     pub intended_use: Option<String>,
+    /// Substring of the declared purpose (`contract.yaml` purpose).
+    pub purpose: Option<String>,
     pub data_kind: Option<String>,
     /// `draft | published | invalid`, or `valid` for published + draft.
     pub status: Option<String>,
     pub limit: Option<u32>,
-    /// Opaque cursor from a previous page's `next`.
+    /// Opaque cursor from a previous page's `next` (`cursor` on the wire API).
+    #[serde(alias = "cursor")]
     pub after: Option<String>,
 }
 
@@ -37,6 +40,8 @@ pub struct CatalogEntry {
     pub version: Option<String>,
     pub name: Option<String>,
     pub summary: Option<String>,
+    pub purpose: Option<String>,
+    pub data_kinds: Option<String>,
     pub domain: Option<String>,
     pub status: String,
     pub maturity: Option<String>,
@@ -64,6 +69,13 @@ pub const MAX_LIMIT: u32 = 500;
 
 /// Turns free text into a safe FTS5 query: each alphanumeric word becomes a
 /// quoted prefix term, ANDed. Returns `None` when nothing searchable remains.
+pub fn fts_terms(q: &str) -> Vec<String> {
+    q.split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(|t| format!("\"{t}\"*"))
+        .collect()
+}
+
 pub fn fts_query(q: &str) -> Option<String> {
     let terms: Vec<String> = q
         .split(|c: char| !c.is_alphanumeric())
@@ -79,7 +91,7 @@ pub fn query_entries(conn: &Connection, f: &EntryFilter) -> rusqlite::Result<Ent
                 c.release_kind, c.availability, c.verification, c.content_id, c.finding_count,
                 (SELECT count(*) FROM kb_dependency d WHERE d.from_path = c.path),
                 (SELECT count(*) FROM kb_dependency d WHERE d.from_path = c.path AND d.resolved = 0),
-                c.kind = 'algopipe', c.dataset_validation, c.origin, c.amendment_count
+                c.kind = 'algopipe', c.dataset_validation, c.origin, c.amendment_count, c.purpose, c.data_kinds
          FROM kb_catalog_entry c WHERE 1=1",
     );
     let mut args: Vec<Value> = Vec::new();
@@ -106,6 +118,10 @@ pub fn query_entries(conn: &Connection, f: &EntryFilter) -> rusqlite::Result<Ent
     if let Some(v) = f.intended_use.as_ref().filter(|v| !v.is_empty()) {
         args.push(Value::Text(format!("%{}%", v.replace('%', "\\%").replace('_', "\\_"))));
         sql.push_str(&format!(" AND c.intended_use LIKE ?{} ESCAPE '\\'", args.len()));
+    }
+    if let Some(v) = f.purpose.as_ref().filter(|v| !v.is_empty()) {
+        args.push(Value::Text(format!("%{}%", v.replace('%', "\\%").replace('_', "\\_"))));
+        sql.push_str(&format!(" AND COALESCE(c.purpose, c.intended_use) LIKE ?{} ESCAPE '\\'", args.len()));
     }
     if let Some(v) = f.data_kind.as_ref().filter(|v| !v.is_empty()) {
         args.push(Value::Text(format!("% {v} %")));
@@ -142,6 +158,8 @@ pub fn query_entries(conn: &Connection, f: &EntryFilter) -> rusqlite::Result<Ent
                     version: r.get(3)?,
                     name: r.get(4)?,
                     summary: r.get(5)?,
+                    purpose: r.get(20)?,
+                    data_kinds: r.get(21)?,
                     domain: r.get(6)?,
                     status: r.get(7)?,
                     maturity: r.get(8)?,
@@ -172,8 +190,8 @@ pub fn query_entries(conn: &Connection, f: &EntryFilter) -> rusqlite::Result<Ent
 }
 
 /// Findings recorded for a bundle, oldest first.
-pub fn findings_for_path(conn: &Connection, path: &str) -> rusqlite::Result<Vec<crate::designer::validate::finding::Finding>> {
-    use crate::designer::validate::finding::{BundleRef, Finding, Severity, Subject};
+pub fn findings_for_path(conn: &Connection, path: &str) -> rusqlite::Result<Vec<crate::contract::finding::Finding>> {
+    use crate::contract::finding::{BundleRef, Finding, Severity, Subject};
     let mut stmt = conn.prepare(
         "SELECT bundle_id, bundle_version, severity, code, subject_json, explanation, action
          FROM kb_finding WHERE path = ?1 ORDER BY finding_id",
@@ -220,8 +238,8 @@ pub struct CatalogResolver<'a> {
     pub conn: &'a Connection,
 }
 
-impl crate::designer::validate::bundle::DependencyResolver for CatalogResolver<'_> {
-    fn resolve(&self, id: &str, version: &str) -> Option<crate::designer::validate::bundle::ResolvedRef> {
+impl crate::contract::bundle::DependencyResolver for CatalogResolver<'_> {
+    fn resolve(&self, id: &str, version: &str) -> Option<crate::contract::bundle::ResolvedRef> {
         use rusqlite::OptionalExtension;
         self.conn
             .query_row(
@@ -233,7 +251,7 @@ impl crate::designer::validate::bundle::DependencyResolver for CatalogResolver<'
             .optional()
             .ok()
             .flatten()
-            .map(|content_id| crate::designer::validate::bundle::ResolvedRef { content_id })
+            .map(|content_id| crate::contract::bundle::ResolvedRef { content_id })
     }
 }
 
@@ -244,8 +262,8 @@ pub struct CatalogDefinitions<'a> {
     pub root: &'a std::path::Path,
 }
 
-impl crate::designer::validate::graph::DefinitionSource for CatalogDefinitions<'_> {
-    fn definition(&self, id: &str, version: &str) -> Option<crate::designer::validate::graph::Definition> {
+impl crate::contract::graph::DefinitionSource for CatalogDefinitions<'_> {
+    fn definition(&self, id: &str, version: &str) -> Option<crate::contract::graph::Definition> {
         use rusqlite::OptionalExtension;
         let is_version = semver::Version::parse(version).is_ok();
         let (status, ver) = if is_version { ("published", version) } else { ("draft", "") };
@@ -261,14 +279,14 @@ impl crate::designer::validate::graph::DefinitionSource for CatalogDefinitions<'
             .ok()
             .flatten();
         let (path, availability) = row?;
-        let (bundle, _) = crate::kb::bundle::read::read_bundle(&self.root.join(path));
+        let (bundle, _) = crate::bundle::read::read_bundle(&self.root.join(path));
         let bundle = bundle?;
         let contract = bundle.contract.clone()?;
-        let maturity = crate::kb::catalog::status::maturity_of(&bundle, crate::kb::trust::effective_trust(self.root, &bundle));
-        Some(crate::designer::validate::graph::Definition {
+        let maturity = crate::catalog::status::maturity_of(&bundle, crate::trust::effective_trust(self.root, &bundle));
+        Some(crate::contract::graph::Definition {
             contract,
             deprecated: availability == "deprecated",
-            implemented: maturity.is_some_and(|m| m != crate::kb::catalog::status::SPECIFICATION_ONLY),
+            implemented: maturity.is_some_and(|m| m != crate::catalog::status::SPECIFICATION_ONLY),
         })
     }
 }

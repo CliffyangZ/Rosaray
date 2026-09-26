@@ -8,16 +8,7 @@
 use std::path::Path;
 
 use rusqlite::Connection;
-use serde_json::json;
 
-use crate::data_repository::sqlite::kb_event_repo;
-use crate::kb::bundle::frontmatter::set_field;
-use crate::kb::bundle::model::{to_yaml, BundleLock, Kind, LockFile, Trust};
-use crate::kb::bundle::read::LOCK_FILE;
-use crate::kb::bundle::service::{published_index, sync_catalog};
-use crate::kb::bundle::write::{mark_read_only, write_bundle_atomic};
-use crate::kb::identity::content_id_of;
-use crate::kb::trust;
 
 pub struct SeedBundle {
     pub id: &'static str,
@@ -51,59 +42,25 @@ pub fn seed_bundles() -> Vec<SeedBundle> {
     ]
 }
 
-/// Installs any seed bundle not already present as a published version.
-/// Returns how many were installed. Never overwrites an existing `id@version`,
-/// even one with different content (that is the researcher's data now).
+/// Installs any seed bundle not already present, through the same submission
+/// path as any author: validated, technically verified by running its own
+/// tests, then stored. Returns how many were installed. Never overwrites an
+/// existing `id@version`.
 pub fn install(conn: &Connection, root: &Path) -> std::io::Result<usize> {
+    use crate::bundle::index::published_index;
+    use crate::submit::{submit, Submission};
     let existing = published_index(root);
     let mut installed = 0;
     for seed in seed_bundles() {
         if existing.iter().any(|p| p.id == seed.id && p.version == seed.version) {
             continue;
         }
-        let mut files: Vec<(String, Vec<u8>)> = Vec::new();
-        for (rel, text) in seed.files {
-            let bytes = if *rel == "ALGONODE.md" {
-                set_field(text, "status", &json!("published")).map_err(|e| std::io::Error::other(e.message))?.into_bytes()
-            } else {
-                text.as_bytes().to_vec()
-            };
-            files.push((rel.to_string(), bytes));
+        let files = seed.files.iter().map(|(rel, text)| (rel.to_string(), text.as_bytes().to_vec())).collect();
+        match submit(conn, root, Submission { files }) {
+            Ok(a) if !a.already_present => installed += 1,
+            Ok(_) => {}
+            Err(e) => return Err(std::io::Error::other(format!("seed {}@{} rejected: {e:?}", seed.id, seed.version))),
         }
-        let hashed: Vec<(String, String)> =
-            files.iter().map(|(p, b)| (p.clone(), format!("b3:{}", blake3::hash(b).to_hex()))).collect();
-        let content_id = content_id_of(hashed.iter().map(|(p, h)| (p.as_str(), h.as_str())));
-        let lock = BundleLock {
-            schema: "quantify-kb/1".into(),
-            id: seed.id.into(),
-            version: seed.version.into(),
-            content_id: content_id.clone(),
-            computational_identity: None,
-            release_kind: Some("knowledge".into()),
-            disclosures: Vec::new(),
-            dependency_summary: None,
-            verification_summary: None,
-            files: hashed
-                .iter()
-                .map(|(p, h)| LockFile { path: p.clone(), blake3: h.trim_start_matches("b3:").to_string() })
-                .collect(),
-        };
-        files.push((LOCK_FILE.into(), to_yaml(&lock).map_err(std::io::Error::other)?.into_bytes()));
-        let dest = root.join("nodes").join(seed.id).join(seed.version);
-        write_bundle_atomic(&dest, &files).map_err(|e| std::io::Error::other(e.to_string()))?;
-        mark_read_only(&dest);
-        trust::record(root, seed.id, seed.version, &content_id, Trust::Builtin, "seed")?;
-        kb_event_repo::append(
-            conn,
-            "published",
-            &format!("{}@{}", seed.id, seed.version),
-            &json!({ "kind": Kind::Algonode.as_str(), "release": "knowledge", "seed": true, "content_id": content_id }),
-        )
-        .map_err(std::io::Error::other)?;
-        installed += 1;
-    }
-    if installed > 0 {
-        sync_catalog(conn, root).map_err(std::io::Error::other)?;
     }
     Ok(installed)
 }
@@ -111,19 +68,18 @@ pub fn install(conn: &Connection, root: &Path) -> std::io::Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::MasterKey;
-    use crate::kb::bundle::read::read_bundle;
+    use crate::bundle::model::Trust;
+    use crate::bundle::read::read_bundle;
 
     fn db(dir: &Path) -> Connection {
-        let key = MasterKey::derive("pw", &crate::crypto::generate_salt()).unwrap();
-        crate::data_repository::sqlite::open(&dir.join("t.sqlite3"), &key).unwrap()
+        crate::store::open(&dir.join("t.sqlite3")).unwrap()
     }
 
     #[test]
     fn installs_six_valid_published_seeds_idempotently() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("kb");
-        crate::kb::ensure_layout(&root).unwrap();
+        crate::ensure_layout(&root).unwrap();
         let conn = db(dir.path());
         assert_eq!(install(&conn, &root).unwrap(), 6);
         assert_eq!(install(&conn, &root).unwrap(), 0, "second run installs nothing");
@@ -133,30 +89,28 @@ mod tests {
             let bundle = bundle.expect("seed reads");
             assert!(findings.is_empty(), "{}: {findings:?}", seed.id);
             assert!(bundle.is_published());
-            let advisory = crate::designer::validate::bundle::validate_bundle(
+            let advisory = crate::contract::bundle::validate_bundle(
                 &bundle,
-                &crate::designer::validate::bundle::BundleCheck::files_only(),
+                &crate::contract::bundle::BundleCheck::files_only(),
             );
             let errors: Vec<_> = advisory.iter().filter(|f| f.is_error()).collect();
             assert!(errors.is_empty(), "{}: {errors:?}", seed.id);
-            assert_eq!(crate::kb::trust::effective_trust(&root, &bundle), Trust::Builtin);
+            assert_eq!(crate::trust::effective_trust(&root, &bundle), Trust::Builtin);
         }
-        let page = crate::kb::catalog::query::query_entries(&conn, &Default::default()).unwrap();
+        let page = crate::catalog::query::query_entries(&conn, &Default::default()).unwrap();
         assert_eq!(page.entries.len(), 6);
-        assert!(page.entries.iter().all(|e| e.maturity.as_deref() == Some("implemented")));
+        assert!(page.entries.iter().all(|e| e.maturity.as_deref() == Some("technically_verified")));
     }
 
     #[test]
-    fn never_overwrites_an_existing_version() {
+    fn never_rewrites_an_installed_version() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("kb");
-        crate::kb::ensure_layout(&root).unwrap();
+        crate::ensure_layout(&root).unwrap();
         let conn = db(dir.path());
-        let custom = root.join("nodes/rosaray.threshold/1.0.0");
-        std::fs::create_dir_all(&custom).unwrap();
-        std::fs::write(custom.join("bundle.lock"), "schema: quantify-kb/1\nid: rosaray.threshold\nversion: 1.0.0\ncontent_id: \"b3:x\"\nfiles: []\n").unwrap();
-        std::fs::write(custom.join("marker.txt"), "mine").unwrap();
-        assert_eq!(install(&conn, &root).unwrap(), 5);
-        assert_eq!(std::fs::read_to_string(custom.join("marker.txt")).unwrap(), "mine");
+        install(&conn, &root).unwrap();
+        let before = crate::identity::file_hashes(&root.join("nodes/rosaray.threshold/1.0.0")).unwrap();
+        assert_eq!(install(&conn, &root).unwrap(), 0);
+        assert_eq!(crate::identity::file_hashes(&root.join("nodes/rosaray.threshold/1.0.0")).unwrap(), before);
     }
 }

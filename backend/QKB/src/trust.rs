@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::kb::bundle::model::{parse_yaml, to_yaml, Trust};
-use crate::kb::bundle::read::Bundle;
+use crate::bundle::model::{parse_yaml, to_yaml, Trust};
+use crate::bundle::read::Bundle;
 
 pub const TRUST_FILE: &str = "local-trust.yaml";
 
@@ -62,6 +62,21 @@ pub fn record(root: &Path, id: &str, version: &str, content_id: &str, trust: Tru
     let yaml = to_yaml(&file).map_err(std::io::Error::other)?;
     std::fs::create_dir_all(root)?;
     // Same atomic-replace discipline as bundles, but for a single file.
+    let tmp = root.join(format!("{TRUST_FILE}.tmp-{}", uuid::Uuid::new_v4()));
+    std::fs::write(&tmp, yaml)?;
+    std::fs::rename(tmp, path(root))
+}
+
+/// Forgets the local decision for one exact version (used when that version is
+/// permanently deleted).
+pub fn forget(root: &Path, id: &str, version: &str, content_id: &str) -> std::io::Result<()> {
+    let mut file = load(root);
+    let before = file.entries.len();
+    file.entries.retain(|e| !(e.id == id && e.version == version && e.content_id == content_id));
+    if file.entries.len() == before {
+        return Ok(());
+    }
+    let yaml = to_yaml(&file).map_err(std::io::Error::other)?;
     let tmp = root.join(format!("{TRUST_FILE}.tmp-{}", uuid::Uuid::new_v4()));
     std::fs::write(&tmp, yaml)?;
     std::fs::rename(tmp, path(root))

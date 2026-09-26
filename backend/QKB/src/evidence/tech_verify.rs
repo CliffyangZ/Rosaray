@@ -10,11 +10,11 @@ use std::sync::Arc;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
-use crate::designer::runtime_adapter::{
+use crate::runtime_adapter::{
     effective_parameters, validate_outputs, Artifact, ExecContext, ImageF32, Inputs, MaskU8, Registry,
 };
-use crate::kb::bundle::model::parse_yaml;
-use crate::kb::bundle::read::Bundle;
+use crate::bundle::model::parse_yaml;
+use crate::bundle::read::Bundle;
 
 pub const CASES_FILE: &str = "tests/cases.yaml";
 pub const RUNNER_VERSION: &str = "1";
@@ -223,18 +223,16 @@ pub fn suite_of(report: &TestReport) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::MasterKey;
-    use crate::kb::bundle::read::read_bundle;
+    use crate::bundle::read::read_bundle;
 
     #[test]
     fn every_seed_bundle_passes_its_own_javascript_derived_cases() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("kb");
-        crate::kb::ensure_layout(&root).unwrap();
-        let key = MasterKey::derive("pw", &crate::crypto::generate_salt()).unwrap();
-        let conn = crate::data_repository::sqlite::open(&dir.path().join("t.sqlite3"), &key).unwrap();
-        crate::kb::seed::install(&conn, &root).unwrap();
-        for seed in crate::kb::seed::seed_bundles() {
+        crate::ensure_layout(&root).unwrap();
+        let conn = crate::store::open(&dir.path().join("t.sqlite3")).unwrap();
+        crate::seed::install(&conn, &root).unwrap();
+        for seed in crate::seed::seed_bundles() {
             let (bundle, _) = read_bundle(&root.join("nodes").join(seed.id).join(seed.version));
             let report = run_bundle_tests(&bundle.unwrap()).unwrap_or_else(|e| panic!("{}: {e}", seed.id));
             let failed: Vec<_> = report.cases.iter().filter(|c| !c.passed).collect();

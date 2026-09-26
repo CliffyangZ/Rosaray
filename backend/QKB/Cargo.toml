@@ -1,0 +1,25 @@
+[package]
+name = "rosaray-qkb"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "rosaray_qkb"
+path = "src/lib.rs"
+
+[dependencies]
+rusqlite = { version = "0.31", features = ["bundled"] }
+blake3 = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+semver = { version = "1", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+regex = "1"
+rand = "0.8"
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile = "3"
